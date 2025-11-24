@@ -24,13 +24,9 @@ import asyncio
 import os
 from pathlib import Path
 from playwright.async_api import async_playwright
+from dotenv import load_dotenv
 
-# Try to load .env file if python-dotenv is available
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+load_dotenv()
 
 COOKIES_FILE = Path("lulu_cookies.json")
 START_URL = "https://www.lulu.com/account/wizard/draft/start"
@@ -73,6 +69,25 @@ async def click_button(page, text):
     await page.wait_for_timeout(500)  # Small delay after click
 
 
+async def check_for_selector(page, selector, timeout=1000):
+    """
+    Check if a selector exists on the page.
+    
+    Args:
+        page: Playwright page object
+        selector: CSS selector to check for
+        timeout: How long to wait in milliseconds
+        
+    Returns:
+        True if selector found, False otherwise
+    """
+    try:
+        await page.wait_for_selector(selector, timeout=timeout)
+        return True
+    except:
+        return False
+
+
 async def select_radio(page, value):
     """Select a radio button by clicking its label."""
     print(f"◉ Selecting: '{value}'")
@@ -83,13 +98,33 @@ async def select_radio(page, value):
 async def fill_field(page, label, value):
     """Fill a text field identified by its label."""
     print(f"✏️  Filling field '{label}' with: '{value}'")
-    # Find input associated with label
-    input_selector = f"label:has-text('{label}') + input, label:has-text('{label}') ~ input, input[placeholder*='{label}']"
-    await page.fill(input_selector, value)
-    await page.wait_for_timeout(300)
+    
+    # Try standard patterns first (next sibling, following sibling, placeholder)
+    simple_selectors = [
+        f"label:has-text('{label}') + input",
+        f"label:has-text('{label}') ~ input",
+        f"input[placeholder*='{label}']"
+    ]
+    
+    for selector in simple_selectors:
+        if await check_for_selector(page, selector, timeout=500):
+            await page.fill(selector, value)
+            await page.wait_for_timeout(300)
+            return
+    
+    # Try previous sibling case (input before label)
+    label_elem = await page.query_selector(f"label:has-text('{label}')")
+    if label_elem:
+        input_elem = await page.evaluate_handle("(el) => el.previousElementSibling", label_elem)
+        if input_elem:
+            await input_elem.as_element().fill(value)
+            await page.wait_for_timeout(300)
+            return
+    
+    raise Exception(f"Could not find field '{label}'")
 
 
-async def fill_field_by_selectors(page, selectors, value, description="field"):
+async def fill_field_by_selector(page, selectors, value, description="field"):
     """
     Try multiple selectors to fill a field.
     
@@ -101,16 +136,14 @@ async def fill_field_by_selectors(page, selectors, value, description="field"):
     """
     print(f"✏️  Filling {description} with: '{value}'")
     for selector in selectors:
-        try:
-            await page.fill(selector, value, timeout=2000)
+        if await check_for_selector(page, selector, timeout=500):
+            await page.fill(selector, value)
             await page.wait_for_timeout(300)
             return True
-        except:
-            continue
     raise Exception(f"Could not find {description} using any selector")
 
 
-async def click_by_selectors(page, selectors, description="button"):
+async def click_by_selector(page, selectors, description="button"):
     """
     Try multiple selectors to click an element.
     
@@ -121,12 +154,10 @@ async def click_by_selectors(page, selectors, description="button"):
     """
     print(f"🖱️  Clicking {description}")
     for selector in selectors:
-        try:
-            await page.click(selector, timeout=2000)
+        if await check_for_selector(page, selector, timeout=500):
+            await page.click(selector)
             await page.wait_for_timeout(500)
             return True
-        except:
-            continue
     raise Exception(f"Could not find {description} using any selector")
 
 
@@ -138,57 +169,54 @@ async def ensure_logged_in(context, page):
     print("🔐 Checking login status...")
     await page.goto(START_URL)
     
-    try:
-        # Check if we're already logged in
-        await page.wait_for_selector("text=Select a Product Type", timeout=1000)
+    if await check_for_selector(page, "text=Select a Product Type", timeout=1000):
         print("✓ Already logged in")
         return True
-    except:
-        print("❌ Not logged in. Attempting automated login...")
-        
-        # Fill in username
-        await fill_field_by_selectors(
-            page,
-            ["input[type='text']", "input[name='username']", "input[id*='username']", "input[type='email']", "input[name='email']"],
-            LULU_USERNAME,
-            "username"
-        )
-        
-        # Fill in password
-        await fill_field_by_selectors(
-            page,
-            ["input[type='password']", "input[name='password']", "input[id*='password']"],
-            LULU_PASSWORD,
-            "password"
-        )
-        
-        # Click login button
-        await click_by_selectors(
-            page,
-            ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Sign in')", "input[type='submit']"],
-            "login button"
-        )
-        
-        print("⏳ Waiting for login to complete...")
-        
-        # Wait for either successful login or CAPTCHA
-        try:
-            await page.wait_for_selector("text=Select a Product Type", timeout=15000)
-            print("✓ Logged in successfully")
-            return True
-        except:
-            print("⚠️  Login may require CAPTCHA or failed.")
-            print("Please complete login manually, then press Enter...")
-            input()
-            
-            # Check again
-            try:
-                await page.wait_for_selector("text=Select a Product Type", timeout=2000)
-                print("✓ Login completed")
-                return True
-            except:
-                print("❌ Still not logged in. Exiting.")
-                return False
+    
+    print("❌ Not logged in. Attempting automated login...")
+    
+    # Fill in username
+    await fill_field_by_selector(
+        page,
+        ["input[type='text']", "input[name='username']", "input[id*='username']", "input[type='email']", "input[name='email']"],
+        LULU_USERNAME,
+        "username"
+    )
+    
+    # Fill in password
+    await fill_field_by_selector(
+        page,
+        ["input[type='password']", "input[name='password']", "input[id*='password']"],
+        LULU_PASSWORD,
+        "password"
+    )
+    
+    # Click login button
+    await click_by_selector(
+        page,
+        ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Sign in')", "input[type='submit']"],
+        "login button"
+    )
+    
+    print("⏳ Waiting for login to complete...")
+    
+    # Wait for either successful login or CAPTCHA
+    if await check_for_selector(page, "text=Select a Product Type", timeout=5000):
+        print("✓ Logged in successfully")
+        return True
+    
+    # Check if CAPTCHA is present
+    print("⚠️  CAPTCHA detected or login taking longer than expected.")
+    print("Please complete CAPTCHA/login manually, then press Enter...")
+    input()
+    
+    # Check again
+    if await check_for_selector(page, "text=Select a Product Type", timeout=2000):
+        print("✓ Login completed")
+        return True
+    
+    print("❌ Still not logged in. Exiting.")
+    return False
 
 
 async def create_book_page1(page, project_title=None):
