@@ -183,7 +183,7 @@ async def upload_file(page, file_path, description="file"):
     await file_input.set_input_files(str(file_path))
     
     # Trigger change event to make sure UI updates
-    #await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", file_input)
+    await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", file_input)
     
     await page.wait_for_timeout(1000)  # Wait a bit for upload to process
     print(f"✓ Uploaded {description}")
@@ -289,19 +289,77 @@ async def create_book_page1(page, project_title=None):
     
     print("✓ Page 1 complete")
 
+
 async def create_book_page2(page, pdf_path):
+    """
+    Page 2: Upload PDF interior file.
+    
+    Args:
+        page: Playwright page object
+        pdf_path: Path to PDF file to upload
+    """
+    print(f"📄 Uploading PDF: {pdf_path}")
+    
+    # Wait for page to fully load - look for file inputs
+    print("⏳ Waiting for page to load...")
+    await page.wait_for_timeout(2000)
+    
+    # Find all file inputs
+    file_inputs = await page.query_selector_all("input[type='file']")
+    
+    if len(file_inputs) == 0:
+        raise Exception("No file inputs found on page")
+    
+    print(f"✓ Found {len(file_inputs)} file input(s)")
+    
+    # Use the first file input (likely the interior PDF)
+    # Input 0 should be the interior, Input 4 might be the cover
+    print("✓ Page loaded, starting upload...")
     await upload_file(page, pdf_path, "pdf book")
+    
+    # Wait for upload flow to start (avoid race condition)
+    print("⏳ Waiting for upload to start...")
+    if await check_for_selector(page, "text=Your file is uploading", timeout=5000):
+        print("✓ Upload started")
+    
+    # Wait for validation to start
+    print("⏳ Waiting for validation...")
+    if await check_for_selector(page, "text=Your file is validating", timeout=30000):
+        print("✓ Validation started")
+    
+    # Wait for final result - success or error
+    print("⏳ Waiting for validation result...")
+    success = await check_for_selector(page, "text=Your Book file was successfully uploaded!", timeout=120000)
+    error = await check_for_selector(page, "[data-testid*='file-upload-notification-error']", timeout=1000)
+    
+    if success:
+        print("✓ Page 2 complete - PDF uploaded successfully")
+        return True
+    elif error:
+        print("❌ Page 2 failed - PDF upload error")
+        return False
+    else:
+        print("⚠️  Page 2 status unclear - check manually")
+        return False
 
-    print("✓ Page 2 complete")
 
-async def automate_book_upload(pdf_path):
+async def automate_book_upload(pdf_path=None):
     """
     Full automation: upload a book to Lulu.
     Handles login automatically if needed.
     
     Args:
-        pdf_path: Path to PDF file to upload. If None, will need to be provided.
+        pdf_path: Path to PDF file to upload. Required.
     """
+    if not pdf_path:
+        print("❌ Error: pdf_path is required")
+        return
+    
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        print(f"❌ Error: PDF file not found: {pdf_path}")
+        return
+    
     async with async_playwright() as p:
         # Use persistent context with saved profile
         user_data_dir = Path("./chrome_profile")
@@ -318,13 +376,19 @@ async def automate_book_upload(pdf_path):
         print("🚀 Starting book upload automation...")
         
         # Ensure we're logged in
-        await ensure_logged_in(context, page)
+        if not await ensure_logged_in(context, page):
+            print("❌ Failed to log in")
+            await context.close()
+            return
         
         # Page 1: Initial setup
         await create_book_page1(page)
-
-        # Page 2: Book upload
-        await create_book_page2(page, pdf_path)
+        
+        # Page 2: Upload PDF
+        if not await create_book_page2(page, pdf_path):
+            print("❌ Failed to upload PDF")
+            await context.close()
+            return
         
         # TODO: Add more pages here as we implement them
         print("⏸️  Pausing for manual continuation...")
