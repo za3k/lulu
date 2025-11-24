@@ -332,15 +332,47 @@ async def create_book_page2(page, pdf_path):
     success = await check_for_selector(page, "text=Your Book file was successfully uploaded!", timeout=120000)
     error = await check_for_selector(page, "[data-testid*='file-upload-notification-error']", timeout=1000)
     
-    if success:
-        print("✓ Page 2 complete - PDF uploaded successfully")
-        return True
-    elif error:
+    if error:
         print("❌ Page 2 failed - PDF upload error")
         return False
-    else:
+    elif not success:
         print("⚠️  Page 2 status unclear - check manually")
         return False
+
+    # Interior Color
+    await select_radio(page, "Standard Black")
+    #await select_radio(page, "Standard Color")
+    
+    # Paper Type
+    await select_radio(page, "60# White")
+
+    # Binding Type
+    hardcover_spine = {
+        (0, 23): None,
+        (24, 84): 6,
+        # TODO: ...
+    }
+    if num_pages > 23: # TODO: This is not actually defined
+        await select_radio(page, "Hardcover Case Wrap") # Choice A, will be selected if not greyed out
+    else
+        await select_radio(page, "Paperback Saddle Stitch") # Choice B, needed for short books.
+    #await select_radio(page, "Paperback Perfect Bound") # Choice A
+
+    # Cover Finish
+    await select_radio(page, "Glossy")
+
+    await wait_for_text(page, "Print Cost")
+    # TODO: data-testid[print-cost] -- print it!
+
+    await select_radio(page, "Upload Your Cover")
+    # TODO: Upload the cover, now. It should be a one-page PDF with wraparound format, including the back, spine, and front. Spine width is a function of page size and number, but not sure what exactly.
+
+    input("Press Enter to continue after reviewing the book preview")
+
+    # Click "Design your project" to continue
+    await click_button(page, "Review Book")
+    
+    print("✓ Page 1 complete")
 
 
 async def automate_book_upload(pdf_path=None):
