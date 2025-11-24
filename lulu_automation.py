@@ -164,6 +164,31 @@ async def click_by_selector(page, selectors, description="button"):
     raise Exception(f"Could not find {description} using any selector")
 
 
+async def upload_file(page, file_path, description="file"):
+    """
+    Upload a file by finding the file input element.
+    
+    Args:
+        page: Playwright page object
+        file_path: Path to file to upload
+        description: Description for logging
+    """
+    print(f"📤 Uploading {description}: {file_path}")
+    
+    # Find the file input - it's often hidden, so we look for any file input
+    file_input = await page.query_selector("input[type='file']")
+    if not file_input:
+        raise Exception(f"Could not find file input for {description}")
+    
+    await file_input.set_input_files(str(file_path))
+    
+    # Trigger change event to make sure UI updates
+    #await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", file_input)
+    
+    await page.wait_for_timeout(1000)  # Wait a bit for upload to process
+    print(f"✓ Uploaded {description}")
+
+
 async def ensure_logged_in(context, page):
     """
     Ensure user is logged in. Automates login if needed.
@@ -264,8 +289,12 @@ async def create_book_page1(page, project_title=None):
     
     print("✓ Page 1 complete")
 
+async def create_book_page2(page, pdf_path):
+    await upload_file(page, pdf_path, "pdf book")
 
-async def automate_book_upload(pdf_path=None):
+    print("✓ Page 2 complete")
+
+async def automate_book_upload(pdf_path):
     """
     Full automation: upload a book to Lulu.
     Handles login automatically if needed.
@@ -293,6 +322,9 @@ async def automate_book_upload(pdf_path=None):
         
         # Page 1: Initial setup
         await create_book_page1(page)
+
+        # Page 2: Book upload
+        await create_book_page2(page, pdf_path)
         
         # TODO: Add more pages here as we implement them
         print("⏸️  Pausing for manual continuation...")
