@@ -25,12 +25,12 @@ import os
 from pathlib import Path
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
-COOKIES_FILE = Path("lulu_cookies.json")
 START_URL = "https://www.lulu.com/account/wizard/draft/start"
-PROJECT_ID_FILE = Path("lulu_project_counter.txt")
+PROJECT_ID_FILE = Path(".lulu_project_counter.txt")
 
 # Login credentials from environment variables
 LULU_USERNAME = os.environ.get("LULU_USERNAME", "")
@@ -82,7 +82,10 @@ async def check_for_selector(page, selector, timeout=1000):
         True if selector found, False otherwise
     """
     try:
+        start = time.time()
         await page.wait_for_selector(selector, timeout=timeout)
+        elapsed = time.time() - start
+        print(f"Waited {int(elapsed*1000)}/{timeout}ms")
         return True
     except:
         return False
@@ -166,7 +169,7 @@ async def ensure_logged_in(context, page):
     Ensure user is logged in. Automates login if needed.
     Returns True if logged in successfully.
     """
-    print("🔐 Checking login status...")
+    print("Checking login status...")
     await page.goto(START_URL)
     
     if await check_for_selector(page, "text=Select a Product Type", timeout=1000):
@@ -175,15 +178,26 @@ async def ensure_logged_in(context, page):
     
     print("❌ Not logged in. Attempting automated login...")
     
-    # Fill in username
+    # Check if CAPTCHA is present, wait for user to solve it if so.
+    dots = 0
+    while (not await check_for_selector(page, "text=Select a Product Type", timeout=100) and
+           not await check_for_selector(page, "input[name=username]", timeout=100)):
+        if dots == 0:
+            print("Please complete CAPTCHA/login manually", end='', file=sys.stderr)
+        print(".", end='', file=sys.stderr) 
+        dots += 1
+        time.sleep(1)
+        sys.stderr.flush()
+    if dots > 0:
+        print(file=sys.stderr)
+    
     await fill_field_by_selector(
         page,
-        ["input[type='text']", "input[name='username']", "input[id*='username']", "input[type='email']", "input[name='email']"],
+        ["input[name='username'], input[id*='username']"],
         LULU_USERNAME,
         "username"
     )
     
-    # Fill in password
     await fill_field_by_selector(
         page,
         ["input[type='password']", "input[name='password']", "input[id*='password']"],
@@ -191,7 +205,6 @@ async def ensure_logged_in(context, page):
         "password"
     )
     
-    # Click login button
     await click_by_selector(
         page,
         ["button[type='submit']", "button:has-text('Log in')", "button:has-text('Sign in')", "input[type='submit']"],
@@ -200,15 +213,10 @@ async def ensure_logged_in(context, page):
     
     print("⏳ Waiting for login to complete...")
     
-    # Wait for either successful login or CAPTCHA
+    # Wait for successful login
     if await check_for_selector(page, "text=Select a Product Type", timeout=5000):
         print("✓ Logged in successfully")
         return True
-    
-    # Check if CAPTCHA is present
-    print("⚠️  CAPTCHA detected or login taking longer than expected.")
-    print("Please complete CAPTCHA/login manually, then press Enter...")
-    input()
     
     # Check again
     if await check_for_selector(page, "text=Select a Product Type", timeout=2000):
@@ -250,9 +258,6 @@ async def create_book_page1(page, project_title=None):
     
     # Fill Book category with "Fiction"
     await fill_field(page, "Book category", "Fiction")
-    
-    # Pause to verify inputs before continuing
-    input("Press Enter to click 'Design your project'")
     
     # Click "Design your project" to continue
     await click_button(page, "Design your project")
