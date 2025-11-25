@@ -15,21 +15,28 @@ To use with a .env file:
     Then run: python lulu_automation.py
 """
 
-# TODO: Instead of waiting for user to press Enter, watch for a specific
-# authentication cookie to be set (e.g., session token or auth cookie)
-# and automatically proceed once detected
-
-import json
-import asyncio
-import os
+from dotenv import load_dotenv
+from IPython.terminal.embed import InteractiveShellEmbed
+from pathlib import Path
 from pathlib import Path
 from playwright.async_api import async_playwright
-from dotenv import load_dotenv
-import time
 from PyPDF2 import PdfReader
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.units import inch, mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
+from urllib.parse import urlparse
+import argparse
+import asyncio
+import code
+import json
+import nest_asyncio
+import os
+import sys
+import time
+import time
+import traceback
 
 load_dotenv()
 
@@ -434,7 +441,6 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         # Filter for lulu.com domain only
         if request.resource_type in ["xhr", "fetch"]:
             try:
-                from urllib.parse import urlparse
                 domain = urlparse(request.url).netloc
                 if domain.endswith('lulu.com'):
                     req_data = {
@@ -457,7 +463,6 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     async def log_response(response):
         # Filter for lulu.com domain only
         try:
-            from urllib.parse import urlparse
             domain = urlparse(response.url).netloc
             if response.request.resource_type in ["xhr", "fetch"] and domain.endswith('lulu.com'):
                 # Find the matching request
@@ -631,6 +636,64 @@ async def create_book_page5(page):
     print("✓ Page 5 complete")
     return True
 
+async def create_book_page6(page):
+    await wait_for_text(page, "Enter Your Shipping Address")
+
+    await page.get_by_test_id('address-autocomplete-input').fill(os.environ.get("STREET_ADDRESS", ""))
+    await fill_field(page, "First Name", os.environ.get("NAME_FIRST", ""))
+    await fill_field(page, "Last Name", os.environ.get("NAME_LAST", ""))
+    await fill_field(page, "Country", os.environ.get("COUNTRY", ""))
+    await fill_field(page, "State", os.environ.get("STATE", ""))
+    await fill_field(page, "City", os.environ.get("CITY", ""))
+    await fill_field(page, "Postal Code", os.environ.get("ZIP", ""))
+    await fill_field(page, "Phone Number", os.environ.get("PHONE", ""))
+
+    await click_button(page, "Choose Delivery Method")
+
+    print("✓ Page 6 complete")
+    return True
+
+async def create_book_page7(page):
+    await wait_for_text(page, "Choose Your Delivery Method")
+
+    # Use standard mail -- they have to take a long time for the first book anyway.
+    await page.click("[data-testid='shipping-option']:has-text('Mail')")
+
+    await click_button(page, "Continue to Payment")
+    print("✓ Page 7 complete")
+    return True
+
+async def create_book_page8(page):
+    total_cost = await page.get_by_test_id("total-amount").text_content()
+    print(f"Total cost will be: {total_cost}")
+    input("Press ENTER to confirm, Ctrl-C to cancel")
+
+    # Shipping address is billing address
+
+    await click_button(page, "Choose Payment Method")
+    
+    print("✓ Page 8 complete")
+    return True
+
+async def create_book_page9(page):
+    await wait_for_text(page, "Choose Your Payment Method")
+
+    payment = page.get_by_title("IFrame for card Number").content_frame # Iframe
+    await payment.get_by_label("Card number").fill(os.environ.get("CC_NUM", ""))
+
+    await payment.locator("input[name='cc-name']").fill(os.environ.get("CC_NAME", ""))
+
+    exp_frame = payment.get_by_title("Iframe for expiry date").content_frame
+    await exp_frame.locator("input[name='cc-exp']").fill(os.environ.get("CC_EXP", ""))
+    
+    sec_frame = payment.get_by_title("Iframe for security date").content_frame
+    await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CCV", ""))
+
+    #await click_button(page, "Pay Now with Credit Card")
+    print("✓ Page 8 complete")
+    return True
+
+
 async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author):
     """
     Process pages 1-4 of the book creation flow.
@@ -658,19 +721,48 @@ async def process_page_5_onwards(page):
     await wait_for_captcha(page, "Your Cart")
     if not await create_book_page5(page):
         return False
+
+    if not await create_book_page6(page):
+        return False
+
+    if not await create_book_page7(page):
+        return False
     
+    if not await create_book_page8(page):
+        return False
+
+    if not await create_book_page9(page):
+        return False
     print("⏸️  Pausing for manual continuation...")
     print("\n🐍 Entering Python REPL. Variables available:")
     print("   page, asyncio, and all helper functions")
+    print("   Use 'await' for async functions (e.g., await fill_field(page, 'name', 'value'))")
     print("   Type 'exit()' or Ctrl+D to exit REPL and close browser\n")
-    import code
     
     # Use globals() and add page/asyncio
     repl_locals = globals().copy()
     repl_locals['page'] = page
     repl_locals['asyncio'] = asyncio
     
-    code.interact(local=repl_locals)
+    # Try IPython first for better experience (tab completion, await support)
+    try:
+        # Allow nested event loops (needed since we're already in async context)
+        nest_asyncio.apply()
+        
+        print("✓ Using IPython (tab completion enabled)")
+        ipshell = InteractiveShellEmbed(user_ns=repl_locals)
+        # Enable top-level await
+        ipshell.autoawait = True
+        ipshell()
+    except ImportError as e:
+        # Fall back to standard REPL
+        print("→ Using standard REPL")
+        print("   (install 'ipython' and 'nest-asyncio' for better experience)")
+        print("   To run async: asyncio.create_task(your_async_function())")
+        code.interact(local=repl_locals)
+    except Exception as e:
+        print(f"⚠️  IPython failed ({e}), using standard REPL")
+        code.interact(local=repl_locals)
     
     return True
 
@@ -771,8 +863,6 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     c = canvas.Canvas(str(output_path), pagesize=(total_width_pts, total_height_pts))
     
     # Use TrueType fonts which will be embedded
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
     
     # Try multiple common font locations
     font_paths = [
@@ -782,7 +872,6 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     title_font = None
     body_font = None
     
-    from pathlib import Path
     for regular_path, bold_path in font_paths:
         try:
             if Path(regular_path).exists() and Path(bold_path).exists():
@@ -967,8 +1056,6 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
 
 
 if __name__ == "__main__":
-    import sys
-    import argparse
     
     parser = argparse.ArgumentParser(description='Automate Lulu.com book upload')
     parser.add_argument('pdf_path', nargs='?', help='Path to PDF file to upload (not needed with --cart)')
@@ -1004,7 +1091,6 @@ if __name__ == "__main__":
                 print(f"⚠️  Upload failed, retrying entire process (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     print("   Waiting 5 seconds before retry...")
-                    import time
                     time.sleep(5)
                 continue
             elif result:
@@ -1016,7 +1102,6 @@ if __name__ == "__main__":
                 
         except Exception as e:
             print(f"❌ Exception occurred: {e}")
-            import traceback
             traceback.print_exc()
             sys.exit(1)
     
