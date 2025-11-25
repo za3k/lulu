@@ -631,6 +631,44 @@ async def create_book_page5(page):
     print("✓ Page 5 complete")
     return True
 
+async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author):
+    """
+    Process pages 1-4 of the book creation flow.
+    
+    Returns True if successful, False otherwise.
+    Returns "RETRY" if upload failed and should retry entire process.
+    """
+    await create_book_page1(page)
+    result = await create_book_page2(page, pdf_path, cover_path, title, subtitle, author)
+    if result == "RETRY":
+        return "RETRY"
+    elif not result:
+        return False
+    await create_book_page3(page)
+    await create_book_page4(page)
+    return True
+
+
+async def process_page_5_onwards(page):
+    """
+    Process page 5 onwards (cart and checkout).
+    
+    Returns True if successful, False otherwise.
+    """
+    await wait_for_captcha(page, "Your Cart")
+    if not await create_book_page5(page):
+        return False
+    
+    print("⏸️  Pausing for manual continuation...")
+    print("\n🐍 Entering Python REPL. Variables available: page, asyncio")
+    print("   Type 'exit()' or Ctrl+D to exit REPL and close browser\n")
+    import code
+    code.interact(local={'page': page, 'asyncio': asyncio})
+    
+    return True
+
+
+
 def get_spine_width(page_count):
     """
     Get spine width in mm for hardcover based on page count.
@@ -809,58 +847,68 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     print(f"✓ Generated cover PDF with embedded fonts: {output_path}")
 
 
-async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle="", author="Anonymous"):
+async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle="", author="Anonymous", cart_mode=False, cart_cost=None):
     """
     Full automation: upload a book to Lulu.
     Handles login automatically if needed.
     
     Args:
-        pdf_path: Path to PDF file to upload. Required.
+        pdf_path: Path to PDF file to upload. Required for pages 1-4.
         title: Book title
         subtitle: Book subtitle (optional)
         author: Author name
+        cart_mode: If True, skip pages 1-4 and go straight to cart
+        cart_cost: Expected cart cost (e.g., "4.00 USD")
     """
-    if not pdf_path:
-        print("❌ Error: pdf_path is required")
-        return
+    global cost_text
     
-    pdf_path = Path(pdf_path)
-    if not pdf_path.exists():
-        print(f"❌ Error: PDF file not found: {pdf_path}")
-        return
-    
-    # Get PDF info and generate cover upfront, before any browser interaction
-    print("📄 Analyzing PDF...")
-    pdf_info = get_pdf_info(pdf_path)
-    print(f"📊 PDF Info: {pdf_info['page_count']} pages, {pdf_info['width_mm']:.1f}mm x {pdf_info['height_mm']:.1f}mm")
-    
-    # Calculate spine width
-    spine_width_mm = get_spine_width(pdf_info['page_count'])
-    is_hardcover = pdf_info['page_count'] > 23
-    
-    if is_hardcover and spine_width_mm:
-        print(f"📏 Hardcover spine width for {pdf_info['page_count']} pages: {spine_width_mm}mm")
-    elif is_hardcover:
-        print(f"⚠️  Using default hardcover spine width (book has {pdf_info['page_count']} pages)")
-        spine_width_mm = 6  # Default fallback
+    if cart_mode:
+        if not cart_cost:
+            print("❌ Error: --cart requires a cost value")
+            return False
+        cost_text = cart_cost
+        print(f"💰 Cart mode: expecting total of {cost_text}")
     else:
-        print(f"📏 Paperback (no spine width needed, {pdf_info['page_count']} pages)")
-        spine_width_mm = 0  # Paperback with < 24 pages has no spine
-    
-    # Generate cover PDF
-    cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
-    print(f"📐 Generating cover PDF...")
-    generate_cover_pdf(
-        cover_path,
-        title,
-        subtitle,
-        author,
-        pdf_info['width_mm'],
-        pdf_info['height_mm'],
-        spine_width_mm,
-        is_hardcover=is_hardcover
-    
-    )
+        if not pdf_path:
+            print("❌ Error: pdf_path is required")
+            return False
+        
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            print(f"❌ Error: PDF file not found: {pdf_path}")
+            return False
+        
+        # Get PDF info and generate cover upfront, before any browser interaction
+        print("📄 Analyzing PDF...")
+        pdf_info = get_pdf_info(pdf_path)
+        print(f"📊 PDF Info: {pdf_info['page_count']} pages, {pdf_info['width_mm']:.1f}mm x {pdf_info['height_mm']:.1f}mm")
+        
+        # Calculate spine width
+        spine_width_mm = get_spine_width(pdf_info['page_count'])
+        is_hardcover = pdf_info['page_count'] > 23
+        
+        if is_hardcover and spine_width_mm:
+            print(f"📏 Hardcover spine width for {pdf_info['page_count']} pages: {spine_width_mm}mm")
+        elif is_hardcover:
+            print(f"⚠️  Using default hardcover spine width (book has {pdf_info['page_count']} pages)")
+            spine_width_mm = 6  # Default fallback
+        else:
+            print(f"📏 Paperback (no spine width needed, {pdf_info['page_count']} pages)")
+            spine_width_mm = 0  # Paperback with < 24 pages has no spine
+        
+        # Generate cover PDF
+        cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
+        print(f"📐 Generating cover PDF...")
+        generate_cover_pdf(
+            cover_path,
+            title,
+            subtitle,
+            author,
+            pdf_info['width_mm'],
+            pdf_info['height_mm'],
+            spine_width_mm,
+            is_hardcover=is_hardcover
+        )
     
     async with async_playwright() as p:
         # Use persistent context with saved profile
@@ -881,47 +929,87 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         if not await ensure_logged_in(page):
             print("❌ Failed to log in")
             await context.close()
-            return
+            return False
         
-        # Page 1: Initial setup
-        await create_book_page1(page)
+        if cart_mode:
+            # Navigate directly to cart
+            print("🛒 Navigating to cart...")
+            await page.goto("https://www.lulu.com/cart")
+            await page.wait_for_timeout(2000)
+        else:
+            # Process pages 1-4
+            result = await process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author)
+            if result == "RETRY":
+                await context.close()
+                return "RETRY"  # Signal to retry entire process
+            elif not result:
+                print("❌ Failed during pages 1-4")
+                await context.close()
+                return False
         
-        # Page 2: Upload PDF and cover
-        if not await create_book_page2(page, pdf_path, cover_path, title, subtitle, author):
-            print("❌ Failed to upload PDF")
+        # Process page 5 onwards
+        if not await process_page_5_onwards(page):
+            print("❌ Failed during page 5+")
             await context.close()
-            return
-
-        # Page 3: Finalize
-        await create_book_page3(page)
-
-        # Page 4: Add to cart
-        await create_book_page4(page)
-
-        # Page 5: Cart Preview
-        await wait_for_captcha(page, "Your Cart")
-        await create_book_page5(page)
-
-        # Page 6: Shipping info
-        
-        # TODO: Add more pages here as we implement them
-        print("⏸️  Pausing for manual continuation...")
-        input("Press Enter to close browser...")
+            return False
         
         await context.close()
+        return True
 
 
 if __name__ == "__main__":
     import sys
+    import argparse
     
-    # Usage: python lulu_automation.py <pdf_path> [title] [subtitle] [author]
-    if len(sys.argv) < 2:
-        print("Usage: python lulu_automation.py <pdf_path> [title] [subtitle] [author]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Automate Lulu.com book upload')
+    parser.add_argument('pdf_path', nargs='?', help='Path to PDF file to upload (not needed with --cart)')
+    parser.add_argument('title', nargs='?', default='Untitled Book', help='Book title')
+    parser.add_argument('subtitle', nargs='?', default='', help='Book subtitle')
+    parser.add_argument('author', nargs='?', default='Anonymous', help='Author name')
+    parser.add_argument('--cart', type=str, metavar='COST', help='Skip to cart mode with expected cost (e.g., "4.00 USD")')
     
-    pdf_path = sys.argv[1]
-    title = sys.argv[2] if len(sys.argv) > 2 else "Untitled Book"
-    subtitle = sys.argv[3] if len(sys.argv) > 3 else ""
-    author = sys.argv[4] if len(sys.argv) > 4 else "Anonymous"
+    args = parser.parse_args()
     
-    asyncio.run(automate_book_upload(pdf_path, title, subtitle, author))
+    cart_mode = args.cart is not None
+    
+    if not cart_mode and not args.pdf_path:
+        parser.error("pdf_path is required unless using --cart")
+    
+    # Retry logic - only retry on "RETRY" signal (upload failures)
+    max_retries = 3
+    for attempt in range(max_retries):
+        if attempt > 0:
+            print(f"\n🔄 Retry attempt {attempt + 1}/{max_retries}")
+        
+        try:
+            result = asyncio.run(automate_book_upload(
+                args.pdf_path,
+                args.title,
+                args.subtitle,
+                args.author,
+                cart_mode=cart_mode,
+                cart_cost=args.cart
+            ))
+            
+            if result == "RETRY":
+                print(f"⚠️  Upload failed, retrying entire process (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    print("   Waiting 5 seconds before retry...")
+                    import time
+                    time.sleep(5)
+                continue
+            elif result:
+                print("✅ Process completed successfully")
+                sys.exit(0)
+            else:
+                print("❌ Process failed")
+                sys.exit(1)
+                
+        except Exception as e:
+            print(f"❌ Exception occurred: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    
+    print(f"❌ Failed after {max_retries} retry attempts")
+    sys.exit(1)
