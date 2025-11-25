@@ -390,7 +390,7 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         # Check if we reverted to upload button
         if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
             print("⚠️  Upload failed, page reverted to upload button")
-            return False
+            return "RETRY"
     
     # Wait for validation to start
     print("⏳ Waiting for validation...")
@@ -399,7 +399,7 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     else:
         if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
             print("⚠️  Upload lost during validation, page reverted to upload button")
-            return False
+            return "RETRY"
     
     # Wait for final result - success or error
     print("⏳ Waiting for validation result...")
@@ -412,7 +412,7 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     elif not success:
         if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
             print("⚠️  Upload lost, page reverted to upload button")
-            return False
+            return "RETRY"
         print("⚠️  Page 2 status unclear - check manually")
         return False
     
@@ -676,66 +676,16 @@ async def create_book_page8(page):
 async def create_book_page9(page):
     await wait_for_text(page, "Choose Your Payment Method")
 
-    print("🔍 Looking for payment iframes...")
-    
-    # Find the main payment iframe
-    print("  → Searching for 'IFrame for card Number'...")
+    await page.get_by_label("accordionToggle").click()
+
     payment = page.get_by_title("IFrame for card Number").content_frame
-    
-    # Fill card number
-    print("  → Filling card number...")
-    try:
-        await payment.get_by_label("Card number").fill(os.environ.get("CC_NUM", ""))
-        print("  ✓ Found main payment iframe and filled card number")
-    except Exception as e:
-        print(f"  ❌ Failed to access payment iframe or fill card number: {e}")
-        raise Exception(f"Failed to fill card number: {e}")
+    exp_frame = page.get_by_title("Iframe for expiry date").content_frame
+    sec_frame = page.get_by_title("Iframe for security code").content_frame
 
-    # Fill cardholder name
-    print("  → Filling cardholder name...")
-    try:
-        await payment.locator("input[name='cc-name']").fill(os.environ.get("CC_NAME", ""))
-    except Exception as e:
-        print(f"  ❌ Failed to fill cardholder name: {e}")
-        raise Exception(f"Failed to fill cardholder name: {e}")
-
-    # Find expiry iframe (nested inside payment iframe)
-    print("  → Searching for 'Iframe for expiry date' (nested)...")
-    exp_frame = payment.get_by_title("Iframe for expiry date").content_frame
-    try:
-        await exp_frame.locator("input[name='cc-exp']").fill(os.environ.get("CC_EXP", ""))
-        print("  ✓ Found expiry date iframe and filled expiry")
-    except Exception as e:
-        print(f"  ❌ Expiry date iframe error: {e}")
-        # Try to list all iframes in payment frame
-        print("  → Listing all iframes in payment frame:")
-        try:
-            # Need to get the actual frame, not the FrameLocator
-            payment_frame_element = await page.query_selector("iframe[title='IFrame for card Number' i]")
-            if payment_frame_element:
-                payment_actual_frame = await payment_frame_element.content_frame()
-                iframes = await payment_actual_frame.query_selector_all("iframe")
-                print(f"    Found {len(iframes)} iframe(s)")
-                for i, iframe in enumerate(iframes):
-                    title = await iframe.get_attribute("title")
-                    name = await iframe.get_attribute("name")
-                    src = await iframe.get_attribute("src")
-                    print(f"    [{i}] title={repr(title)}, name={repr(name)}, src={repr(src[:50] if src else None)}")
-            else:
-                print("    Could not access payment frame to list iframes")
-        except Exception as list_error:
-            print(f"    Failed to list iframes: {list_error}")
-        raise Exception(f"Failed to fill expiry date: {e}")
-    
-    # Find security code iframe (nested inside payment iframe)
-    print("  → Searching for 'Iframe for security code' (nested)...")
-    sec_frame = payment.get_by_title("Iframe for security date").content_frame
-    try:
-        await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CCV", ""))
-        print("  ✓ Found security code iframe and filled CCV")
-    except Exception as e:
-        print(f"  ❌ Security code iframe error: {e}")
-        raise Exception(f"Failed to fill security code: {e}")
+    await payment.get_by_label("Card number").fill(os.environ.get("CC_NUM", ""))
+    await payment.locator("input[name='cc-name']").fill(os.environ.get("CC_NAME", ""))
+    await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CVV", ""))
+    await exp_frame.get_by_label("Expiry date").fill(os.environ.get("CC_EXP", ""))
 
     #await click_button(page, "Pay Now with Credit Card")
     print("✓ Page 9 complete")
@@ -1001,7 +951,10 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         c.rotate(90)
         
         c.setFont(title_font, 14)
-        spine_text = f"{title}  —  {author}"
+        if subtitle:
+            spine_text = f"{title}  —  {subtitle}"
+        else:
+            spine_text = f"{title}"
         c.drawCentredString(0, 0, spine_text)
         
         c.restoreState()
