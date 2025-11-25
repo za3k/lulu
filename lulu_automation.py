@@ -70,7 +70,7 @@ BOOK_SIZES = {
 }
 # Pages: 2-800 in general, varies by binding type
 BINDINGS = ("Paperback Perfect Bound", "Paperback Coil Bound", "Paperback Saddle Stitch", "Hardcover Case Wrap", "Hardcover Linen Wrap")
-COLOR = ("Standard B&W", "Premium B&W", "Standard Color", "Premium Color")
+COLOR = ("Standard Black & White", "Premium Black & White", "Standard Color", "Premium Color")
 PAPER_TYPES = ("60# Uncoated Cream", "60# Uncoated White", "80# Coated White")
 COVER_FINISH = ("Glossy", "Matte")
 
@@ -410,7 +410,7 @@ async def create_book_page1(page, project_title=None):
     print("✓ Page 1 complete")
 
 
-async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", subtitle="", author="Anonymous", binding="Unknown Binding Type"):
+async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding Type"):
     """
     Page 2: Upload PDF interior file.
     
@@ -774,28 +774,23 @@ async def create_book_page9(page):
     await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CVV", ""))
     await exp_frame.get_by_label("Expiry date").fill(os.environ.get("CC_EXP", ""))
 
-    #await click_button(page, "Pay Now with Credit Card")
-    print("✓ Page 9 complete")
-    return True
+    a = input("Press Y to really, definitely buy this")
+    while a.strip() not in "yYnN":
+        a = input("Press Y to really, definitely buy this")
 
+    if a.strip() in "yY":
+        await click_button(page, "Pay Now with Credit Card")
 
-async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author, binding):
-    """
-    Process pages 1-4 of the book creation flow.
-    
-    Returns True if successful, False otherwise.
-    Returns "RETRY" if upload failed and should retry entire process.
-    """
-    await create_book_page1(page)
-    result = await create_book_page2(page, pdf_path, cover_path, title, subtitle, author, binding)
-    if result == "RETRY":
-        return "RETRY"
-    elif not result:
+        print("✓ Page 9 complete")
+        return True
+    elif a.strip() in "nN":
         return False
-    await create_book_page3(page)
-    await create_book_page4(page)
-    return True
 
+async def create_book_page10(page)
+    await wait_for_text(page, "Thanks for ordering")
+    how_long = await page.get_by_test_id("shipping-method-delivery-time").text_content()
+    print(f"How long it will be: {how_long}")
+    print("✓ Page 10 complete")
 
 def open_repl(page, message="Manual continuation"):
     """Open an interactive REPL with page and all helpers available."""
@@ -830,6 +825,22 @@ def open_repl(page, message="Manual continuation"):
         print(f"⚠️  IPython failed ({e}), using standard REPL")
         code.interact(local=repl_locals)
 
+async def process_pages_1_to_4(page, pdf_path, cover_path, binding):
+    """
+    Process pages 1-4 of the book creation flow.
+    
+    Returns True if successful, False otherwise.
+    Returns "RETRY" if upload failed and should retry entire process.
+    """
+    await create_book_page1(page)
+    result = await create_book_page2(page, pdf_path, cover_path, binding)
+    if result == "RETRY":
+        return "RETRY"
+    elif not result:
+        return False
+    await create_book_page3(page)
+    await create_book_page4(page)
+    return True
 
 async def process_page_5_onwards(page):
     """
@@ -853,6 +864,9 @@ async def process_page_5_onwards(page):
 
         if not await create_book_page9(page):
             return False
+
+        if not await create_book_page10(page):
+            return False
     except Exception as e:
         print(f"\n❌ Exception occurred: {e}")
         import traceback
@@ -862,10 +876,8 @@ async def process_page_5_onwards(page):
         return False
     
     # Success - open REPL for manual continuation
-    open_repl(page, "Pausing for manual continuation")
+    #open_repl(page, "Pausing for manual continuation")
     return True
-
-
 
 def get_spine_width(page_count, binding):
     """
@@ -1036,11 +1048,6 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     if spine_width_mm >= 6:
         spine_center_x = spine_start_x + (spine_width_mm * MM_TO_POINTS / 2)
         
-        # DEBUG: Draw a circle at spine center
-        c.setStrokeColorRGB(1, 0, 0)  # Red
-        c.setFillColorRGB(1, 0, 0)    # Red
-        c.circle(spine_center_x, total_height_pts / 2, 5, stroke=1, fill=1)
-        
         c.saveState()
         c.translate(spine_center_x, total_height_pts / 2)
         c.rotate(90)
@@ -1149,7 +1156,7 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
             await page.wait_for_timeout(2000)
         else:
             # Process pages 1-4
-            result = await process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author, binding)
+            result = await process_pages_1_to_4(page, pdf_path, cover_path, binding)
             if result == "RETRY":
                 await context.close()
                 return "RETRY"  # Signal to retry entire process

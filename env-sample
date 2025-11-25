@@ -1,0 +1,17 @@
+LULU_USERNAME=user@example.com
+LULU_PASSWORD=hunter1
+
+NAME_FIRST=John
+NAME_LAST=Smith
+COUNTRY="United States of America"
+STATE=Chicago
+CITY=Illinois
+ZIP=12345
+PHONE=555-555-5555
+STREET_ADDRESS="123 Main Street"
+
+CC_NUM=1234123412341234
+CC_EXP=1225
+CC_CVV=123
+CC_NAME="John Smith"
+
