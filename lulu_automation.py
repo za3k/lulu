@@ -790,7 +790,7 @@ def get_spine_width(page_count, binding):
     spine_table = [
         (2, 23, 0),
         (24, 84, 6),
-        (85, 140, 12.7),  # Lulu uses 0.5" = 12.7mm, not 13mm
+        (85, 140, 13),
         (141, 168, 16),
         (169, 194, 17),
         (195, 222, 19),
@@ -852,16 +852,16 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         # - NO wrap on spine-side (left) edges - those are glued to the book
         # - 0.125" (3.175mm) overhang that wraps around, adding to total dimensions
         wrap_mm = 19.05  # 0.75 inches
-        overhang_mm = 6.35 / 2 # 0.25 inches total (0.125" × 2 for wraparound)
+        overhang_mm = 3.175 # 0.125" inches
         
         # Each panel: outer_edge_wrap + trim_width (no wrap on spine side)
         panel_width_mm = wrap_mm + front_width_mm
         
         # Total width: back_panel + spine + front_panel + overhang
-        total_width_mm = overhang_mm + panel_width_mm + spine_width_mm + panel_width_mm + overhang_mm
+        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + (2 * overhang_mm)
         
         # Total height: trim + top_wrap + bottom_wrap + overhang  
-        total_height_mm = overhand_mm + wrap_mm + front_height_mm + wrap_mm + overhang_mm
+        total_height_mm = front_height_mm + (2 * wrap_mm) + (2 * overhang_mm)
     elif binding == "Paperback Saddle Stitch":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
@@ -947,10 +947,9 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Spine text (vertical, centered) - only if spine is wide enough
     if spine_width_mm >= 6:
-        spine_center_x = spine_start_x + (spine_width_mm * MM_TO_POINTS / 2)
+        spine_center_x = total_width_pts / 2
         
         c.saveState()
-        print(f"Spine center: {spine_start_x}, total_width_pts/2: {total_width_pts/2}")
         c.translate(spine_center_x, total_height_pts / 2)
         c.rotate(90)
         
@@ -959,7 +958,7 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
             spine_text = f"{title}  —  {subtitle}"
         else:
             spine_text = f"{title}"
-        c.drawCentredString(0, 0, spine_text)
+        c.drawCentredString(0, -14/3, spine_text)
         
         c.restoreState()
     
