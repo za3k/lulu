@@ -40,6 +40,9 @@ import traceback
 
 load_dotenv()
 
+# Conversion factor: millimeters to points (1 point = 1/72 inch = 25.4/72 mm)
+MM_TO_POINTS = 2.83465
+
 START_URL = "https://www.lulu.com/account/wizard/draft/start"
 PROJECT_ID_FILE = Path(".lulu_project_counter.txt")
 
@@ -855,10 +858,10 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         panel_width_mm = wrap_mm + front_width_mm
         
         # Total width: back_panel + spine + front_panel + overhang
-        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + (2 * overhang_mm)
+        total_width_mm = overhang_mm + panel_width_mm + spine_width_mm + panel_width_mm + overhang_mm
         
         # Total height: trim + top_wrap + bottom_wrap + overhang  
-        total_height_mm = front_height_mm + (2 * wrap_mm) + (2 * overhang_mm)
+        total_height_mm = overhand_mm + wrap_mm + front_height_mm + wrap_mm + overhang_mm
     elif binding == "Paperback Saddle Stitch":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
@@ -875,9 +878,9 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     print(f"   Interior: {front_width_mm:.1f}mm x {front_height_mm:.1f}mm")
     print(f"   Spine: {spine_width_mm}mm")
     
-    # Convert to points for ReportLab (1mm = 2.83465 points)
-    total_width_pts = total_width_mm * 2.83465
-    total_height_pts = total_height_mm * 2.83465
+    # Convert to points for ReportLab
+    total_width_pts = total_width_mm * MM_TO_POINTS
+    total_height_pts = total_height_mm * MM_TO_POINTS
     
     # Create PDF with embedded fonts
     c = canvas.Canvas(str(output_path), pagesize=(total_width_pts, total_height_pts))
@@ -916,15 +919,15 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         # Layout: [overhang][back_panel][spine][front_panel][overhang]
         # Overhang is split on left and right outer edges
         # Spine starts after: overhang + back_panel
-        spine_start_x = (overhang_mm + panel_width_mm) * 2.83465
+        spine_start_x = (overhang_mm + panel_width_mm) * MM_TO_POINTS
         # Front starts after: overhang + back_panel + spine
-        front_start_x = (overhang_mm + panel_width_mm + spine_width_mm) * 2.83465
-        front_center_x = front_start_x + (panel_width_mm * 2.83465 / 2)
+        front_start_x = (overhang_mm + panel_width_mm + spine_width_mm) * MM_TO_POINTS
+        front_center_x = front_start_x + (panel_width_mm * MM_TO_POINTS / 2)
     else:
         # For paperback: bleed + back + spine
-        front_start_x = (bleed_mm + front_width_mm + spine_width_mm) * 2.83465
-        spine_start_x = (bleed_mm + front_width_mm) * 2.83465
-        front_center_x = front_start_x + (front_width_mm * 2.83465 / 2)
+        front_start_x = (bleed_mm + front_width_mm + spine_width_mm) * MM_TO_POINTS
+        spine_start_x = (bleed_mm + front_width_mm) * MM_TO_POINTS
+        front_center_x = front_start_x + (front_width_mm * MM_TO_POINTS / 2)
     
     # Front cover text
     c.setFillColorRGB(0, 0, 0)
@@ -944,9 +947,10 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Spine text (vertical, centered) - only if spine is wide enough
     if spine_width_mm >= 6:
-        spine_center_x = spine_start_x + (spine_width_mm * 2.83465 / 2)
+        spine_center_x = spine_start_x + (spine_width_mm * MM_TO_POINTS / 2)
         
         c.saveState()
+        print(f"Spine center: {spine_start_x}, total_width_pts/2: {total_width_pts/2}")
         c.translate(spine_center_x, total_height_pts / 2)
         c.rotate(90)
         
