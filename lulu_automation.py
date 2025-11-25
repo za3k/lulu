@@ -660,10 +660,17 @@ async def process_page_5_onwards(page):
         return False
     
     print("⏸️  Pausing for manual continuation...")
-    print("\n🐍 Entering Python REPL. Variables available: page, asyncio")
+    print("\n🐍 Entering Python REPL. Variables available:")
+    print("   page, asyncio, and all helper functions")
     print("   Type 'exit()' or Ctrl+D to exit REPL and close browser\n")
     import code
-    code.interact(local={'page': page, 'asyncio': asyncio})
+    
+    # Use globals() and add page/asyncio
+    repl_locals = globals().copy()
+    repl_locals['page'] = page
+    repl_locals['asyncio'] = asyncio
+    
+    code.interact(local=repl_locals)
     
     return True
 
@@ -866,7 +873,9 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         if not cart_cost:
             print("❌ Error: --cart requires a cost value")
             return False
-        cost_text = cart_cost
+        # Format cost to Lulu's format with USD suffix (e.g., "4.50 USD")
+        cost_value = float(cart_cost.replace(" USD", "").strip())
+        cost_text = f"{cost_value:.2f} USD"
         print(f"💰 Cart mode: expecting total of {cost_text}")
     else:
         if not pdf_path:
