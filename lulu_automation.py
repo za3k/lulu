@@ -419,9 +419,6 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     # Success! Break out of retry loop
     print("✓ PDF validated successfully")
     
-    # Get PDF info for page count
-    pdf_info = get_pdf_info(pdf_path)
-    
     # Extract page count from the page (should match our PDF info)
     page_count_input = await page.query_selector("input[id='page-count']")
     if page_count_input:
@@ -432,7 +429,8 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         num_pages = pdf_info['page_count']
         print(f"📖 Using PDF page count: {num_pages}")
     
-    # Set up AJAX request logging to capture price calculation requests
+    # Set global cost_text from the form (will be used in page 5)
+    global cost_text
     print("📊 Setting up AJAX logging...")
     ajax_log_file = Path("lulu_ajax_requests.log")
     ajax_requests = []
@@ -678,19 +676,69 @@ async def create_book_page8(page):
 async def create_book_page9(page):
     await wait_for_text(page, "Choose Your Payment Method")
 
-    payment = page.get_by_title("IFrame for card Number").content_frame # Iframe
-    await payment.get_by_label("Card number").fill(os.environ.get("CC_NUM", ""))
-
-    await payment.locator("input[name='cc-name']").fill(os.environ.get("CC_NAME", ""))
-
-    exp_frame = payment.get_by_title("Iframe for expiry date").content_frame
-    await exp_frame.locator("input[name='cc-exp']").fill(os.environ.get("CC_EXP", ""))
+    print("🔍 Looking for payment iframes...")
     
+    # Find the main payment iframe
+    print("  → Searching for 'IFrame for card Number'...")
+    payment = page.get_by_title("IFrame for card Number").content_frame
+    
+    # Fill card number
+    print("  → Filling card number...")
+    try:
+        await payment.get_by_label("Card number").fill(os.environ.get("CC_NUM", ""))
+        print("  ✓ Found main payment iframe and filled card number")
+    except Exception as e:
+        print(f"  ❌ Failed to access payment iframe or fill card number: {e}")
+        raise Exception(f"Failed to fill card number: {e}")
+
+    # Fill cardholder name
+    print("  → Filling cardholder name...")
+    try:
+        await payment.locator("input[name='cc-name']").fill(os.environ.get("CC_NAME", ""))
+    except Exception as e:
+        print(f"  ❌ Failed to fill cardholder name: {e}")
+        raise Exception(f"Failed to fill cardholder name: {e}")
+
+    # Find expiry iframe (nested inside payment iframe)
+    print("  → Searching for 'Iframe for expiry date' (nested)...")
+    exp_frame = payment.get_by_title("Iframe for expiry date").content_frame
+    try:
+        await exp_frame.locator("input[name='cc-exp']").fill(os.environ.get("CC_EXP", ""))
+        print("  ✓ Found expiry date iframe and filled expiry")
+    except Exception as e:
+        print(f"  ❌ Expiry date iframe error: {e}")
+        # Try to list all iframes in payment frame
+        print("  → Listing all iframes in payment frame:")
+        try:
+            # Need to get the actual frame, not the FrameLocator
+            payment_frame_element = await page.query_selector("iframe[title='IFrame for card Number' i]")
+            if payment_frame_element:
+                payment_actual_frame = await payment_frame_element.content_frame()
+                iframes = await payment_actual_frame.query_selector_all("iframe")
+                print(f"    Found {len(iframes)} iframe(s)")
+                for i, iframe in enumerate(iframes):
+                    title = await iframe.get_attribute("title")
+                    name = await iframe.get_attribute("name")
+                    src = await iframe.get_attribute("src")
+                    print(f"    [{i}] title={repr(title)}, name={repr(name)}, src={repr(src[:50] if src else None)}")
+            else:
+                print("    Could not access payment frame to list iframes")
+        except Exception as list_error:
+            print(f"    Failed to list iframes: {list_error}")
+        raise Exception(f"Failed to fill expiry date: {e}")
+    
+    # Find security code iframe (nested inside payment iframe)
+    print("  → Searching for 'Iframe for security code' (nested)...")
     sec_frame = payment.get_by_title("Iframe for security date").content_frame
-    await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CCV", ""))
+    try:
+        await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CCV", ""))
+        print("  ✓ Found security code iframe and filled CCV")
+    except Exception as e:
+        print(f"  ❌ Security code iframe error: {e}")
+        raise Exception(f"Failed to fill security code: {e}")
 
     #await click_button(page, "Pay Now with Credit Card")
-    print("✓ Page 8 complete")
+    print("✓ Page 9 complete")
     return True
 
 
@@ -712,28 +760,9 @@ async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, auth
     return True
 
 
-async def process_page_5_onwards(page):
-    """
-    Process page 5 onwards (cart and checkout).
-    
-    Returns True if successful, False otherwise.
-    """
-    await wait_for_captcha(page, "Your Cart")
-    if not await create_book_page5(page):
-        return False
-
-    if not await create_book_page6(page):
-        return False
-
-    if not await create_book_page7(page):
-        return False
-    
-    if not await create_book_page8(page):
-        return False
-
-    if not await create_book_page9(page):
-        return False
-    print("⏸️  Pausing for manual continuation...")
+def open_repl(page, message="Manual continuation"):
+    """Open an interactive REPL with page and all helpers available."""
+    print(f"⏸️  {message}...")
     print("\n🐍 Entering Python REPL. Variables available:")
     print("   page, asyncio, and all helper functions")
     print("   Use 'await' for async functions (e.g., await fill_field(page, 'name', 'value'))")
@@ -763,7 +792,40 @@ async def process_page_5_onwards(page):
     except Exception as e:
         print(f"⚠️  IPython failed ({e}), using standard REPL")
         code.interact(local=repl_locals)
+
+
+async def process_page_5_onwards(page):
+    """
+    Process page 5 onwards (cart and checkout).
     
+    Returns True if successful, False otherwise.
+    """
+    try:
+        await wait_for_captcha(page, "Your Cart")
+        if not await create_book_page5(page):
+            return False
+
+        if not await create_book_page6(page):
+            return False
+
+        if not await create_book_page7(page):
+            return False
+        
+        if not await create_book_page8(page):
+            return False
+
+        if not await create_book_page9(page):
+            return False
+    except Exception as e:
+        print(f"\n❌ Exception occurred: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nOpening REPL for debugging...")
+        open_repl(page, "Error occurred - opening REPL for debugging")
+        return False
+    
+    # Success - open REPL for manual continuation
+    open_repl(page, "Pausing for manual continuation")
     return True
 
 
@@ -778,7 +840,7 @@ def get_spine_width(page_count):
     spine_table = [
         (2, 23, 0),
         (24, 84, 6),
-        (85, 140, 13),
+        (85, 140, 12.7),  # Lulu uses 0.5" = 12.7mm, not 13mm
         (141, 168, 16),
         (169, 194, 17),
         (195, 222, 19),
@@ -831,16 +893,21 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         is_hardcover: True for hardcover, False for paperback
     """
     if is_hardcover:
-        # Hardcover is 0.75" (19.05mm) larger than trim size
-        wrap_extension_mm = 19.05
+        # Hardcover specifications per Lulu documentation:
+        # - 0.75" (19.05mm) wrap on top, bottom, and outer (right) edges
+        # - NO wrap on spine-side (left) edges - those are glued to the book
+        # - 0.125" (3.175mm) overhang that wraps around, adding to total dimensions
+        wrap_mm = 19.05  # 0.75 inches
+        overhang_mm = 6.35  # 0.25 inches total (0.125" × 2 for wraparound)
         
-        # Calculate dimensions
-        front_total_width_mm = front_width_mm + (2 * wrap_extension_mm)
-        front_total_height_mm = front_height_mm + (2 * wrap_extension_mm)
+        # Each panel: outer_edge_wrap + trim_width (no wrap on spine side)
+        panel_width_mm = wrap_mm + front_width_mm
         
-        # Total cover width: back + spine + front
-        total_width_mm = front_total_width_mm + spine_width_mm + front_total_width_mm
-        total_height_mm = front_total_height_mm
+        # Total width: back_panel + spine + front_panel + overhang
+        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + overhang_mm
+        
+        # Total height: trim + top_wrap + bottom_wrap + overhang  
+        total_height_mm = front_height_mm + (2 * wrap_mm) + overhang_mm
     else:
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
@@ -897,9 +964,12 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Calculate positions (in points)
     if is_hardcover:
-        front_start_x = (front_total_width_mm + spine_width_mm) * 2.83465
-        spine_start_x = front_total_width_mm * 2.83465
-        front_center_x = front_start_x + (front_total_width_mm * 2.83465 / 2)
+        # Back panel: outer_wrap + trim
+        panel_width_mm = wrap_mm + front_width_mm
+        # Front panel starts after: back_panel + spine
+        front_start_x = (panel_width_mm + spine_width_mm) * 2.83465
+        spine_start_x = panel_width_mm * 2.83465
+        front_center_x = front_start_x + (panel_width_mm * 2.83465 / 2)
     else:
         # For paperback: bleed + back + spine
         front_start_x = (bleed_mm + front_width_mm + spine_width_mm) * 2.83465
