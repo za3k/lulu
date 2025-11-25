@@ -13,3 +13,5 @@ Usage:
 Lulu supports only specific sizes for pages -- most standard page sizes are OK.
 
 The cover is auto-generated for you, using the title and author provided.
+
+![](screenshot.png)
