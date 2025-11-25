@@ -350,7 +350,7 @@ async def create_book_page1(page, project_title=None):
     print("✓ Page 1 complete")
 
 
-async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", subtitle="", author="Anonymous"):
+async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", subtitle="", author="Anonymous", binding="Unknown Binding Type"):
     """
     Page 2: Upload PDF interior file.
     
@@ -484,10 +484,7 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     await select_radio(page, "60# White")
 
     # Binding Type - choose based on page count
-    if num_pages > 23:
-        await select_radio(page, "Hardcover Case Wrap")
-    else:
-        await select_radio(page, "Paperback Saddle Stitch")
+    await select_radio(page, binding)
 
     # Cover Finish (this is the last selection before price)
     await select_radio(page, "Glossy")
@@ -692,7 +689,7 @@ async def create_book_page9(page):
     return True
 
 
-async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author):
+async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author, binding):
     """
     Process pages 1-4 of the book creation flow.
     
@@ -700,7 +697,7 @@ async def process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, auth
     Returns "RETRY" if upload failed and should retry entire process.
     """
     await create_book_page1(page)
-    result = await create_book_page2(page, pdf_path, cover_path, title, subtitle, author)
+    result = await create_book_page2(page, pdf_path, cover_path, title, subtitle, author, binding)
     if result == "RETRY":
         return "RETRY"
     elif not result:
@@ -780,7 +777,7 @@ async def process_page_5_onwards(page):
 
 
 
-def get_spine_width(page_count):
+def get_spine_width(page_count, binding):
     """
     Get spine width in mm for hardcover based on page count.
     Returns None if hardcover not available (< 24 pages).
@@ -825,7 +822,7 @@ def get_spine_width(page_count):
     return None
 
 
-def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, front_height_mm, spine_width_mm, is_hardcover=True):
+def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, front_height_mm, num_pages, binding):
     """
     Generate a wraparound cover PDF for hardcover or paperback.
     
@@ -839,26 +836,30 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         author: Author name
         front_width_mm: Front cover width (trim size)
         front_height_mm: Front cover height (trim size)
-        spine_width_mm: Spine width in mm
-        is_hardcover: True for hardcover, False for paperback
+        TODO: add 2 params
     """
-    if is_hardcover:
+
+    spine_width_mm = get_spine_width(num_pages, binding)
+    assert spine_width_mm is not None, f"Invalid number of pages {num_pages} for binding '{binding}'"
+    print(f"📏 Spine width for {num_pages} pages: {spine_width_mm}mm")
+        
+    if binding == "Hardcover Case Wrap":
         # Hardcover specifications per Lulu documentation:
         # - 0.75" (19.05mm) wrap on top, bottom, and outer (right) edges
         # - NO wrap on spine-side (left) edges - those are glued to the book
         # - 0.125" (3.175mm) overhang that wraps around, adding to total dimensions
         wrap_mm = 19.05  # 0.75 inches
-        overhang_mm = 6.35  # 0.25 inches total (0.125" × 2 for wraparound)
+        overhang_mm = 6.35 / 2 # 0.25 inches total (0.125" × 2 for wraparound)
         
         # Each panel: outer_edge_wrap + trim_width (no wrap on spine side)
         panel_width_mm = wrap_mm + front_width_mm
         
         # Total width: back_panel + spine + front_panel + overhang
-        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + overhang_mm
+        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + (2 * overhang_mm)
         
         # Total height: trim + top_wrap + bottom_wrap + overhang  
-        total_height_mm = front_height_mm + (2 * wrap_mm) + overhang_mm
-    else:
+        total_height_mm = front_height_mm + (2 * wrap_mm) + (2 * overhang_mm)
+    elif binding == "Paperback Saddle Stitch":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
         
@@ -867,8 +868,10 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         total_width_mm = bleed_mm + front_width_mm + spine_width_mm + front_width_mm + bleed_mm
         # Height: bleed + height + bleed
         total_height_mm = bleed_mm + front_height_mm + bleed_mm
+    else:
+        assert False, f"Don't know how to calculte cover size for: {binding}" 
     
-    print(f"📐 Cover dimensions ({'Hardcover' if is_hardcover else 'Paperback'}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
+    print(f"📐 Cover dimensions ({binding}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
     print(f"   Interior: {front_width_mm:.1f}mm x {front_height_mm:.1f}mm")
     print(f"   Spine: {spine_width_mm}mm")
     
@@ -902,18 +905,14 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
             continue
     
     if not title_font:
-        # If no TrueType fonts found, we have a problem - Lulu requires embedded fonts
-        # ReportLab's standard fonts (Helvetica) are NOT embedded by default
-        print("  WARNING: Could not find TrueType fonts. Using Helvetica (may not be embedded!)")
-        title_font = 'Helvetica-Bold'
-        body_font = 'Helvetica'
+        raise Exception("DejaVuSans font not found -- unable to embed PDF fonts for Lulu")
     
     # Set background to white
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, total_width_pts, total_height_pts, fill=True, stroke=False)
     
     # Calculate positions (in points)
-    if is_hardcover:
+    if binding == "Hardcover Case Wrap":
         # Back panel: outer_wrap + trim
         panel_width_mm = wrap_mm + front_width_mm
         # Front panel starts after: back_panel + spine
@@ -1004,18 +1003,12 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         pdf_info = get_pdf_info(pdf_path)
         print(f"📊 PDF Info: {pdf_info['page_count']} pages, {pdf_info['width_mm']:.1f}mm x {pdf_info['height_mm']:.1f}mm")
         
-        # Calculate spine width
-        spine_width_mm = get_spine_width(pdf_info['page_count'])
-        is_hardcover = pdf_info['page_count'] > 23
-        
-        if is_hardcover and spine_width_mm:
-            print(f"📏 Hardcover spine width for {pdf_info['page_count']} pages: {spine_width_mm}mm")
-        elif is_hardcover:
-            print(f"⚠️  Using default hardcover spine width (book has {pdf_info['page_count']} pages)")
-            spine_width_mm = 6  # Default fallback
+        num_pages = pdf_info['page_count']
+        if num_pages > 23:
+            binding = "Hardcover Case Wrap"
         else:
-            print(f"📏 Paperback (no spine width needed, {pdf_info['page_count']} pages)")
-            spine_width_mm = 0  # Paperback with < 24 pages has no spine
+            binding = "Paperback Saddle Stitch"
+
         
         # Generate cover PDF
         cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
@@ -1027,8 +1020,8 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
             author,
             pdf_info['width_mm'],
             pdf_info['height_mm'],
-            spine_width_mm,
-            is_hardcover=is_hardcover
+            num_pages = num_pages,
+            binding = binding,
         )
     
     async with async_playwright() as p:
@@ -1059,7 +1052,7 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
             await page.wait_for_timeout(2000)
         else:
             # Process pages 1-4
-            result = await process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author)
+            result = await process_pages_1_to_4(page, pdf_path, cover_path, title, subtitle, author, binding)
             if result == "RETRY":
                 await context.close()
                 return "RETRY"  # Signal to retry entire process
@@ -1112,9 +1105,7 @@ if __name__ == "__main__":
             
             if result == "RETRY":
                 print(f"⚠️  Upload failed, retrying entire process (attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    print("   Waiting 5 seconds before retry...")
-                    time.sleep(5)
+                print("   Retrying...")
                 continue
             elif result:
                 print("✅ Process completed successfully")
