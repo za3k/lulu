@@ -39,6 +39,7 @@ PROJECT_ID_FILE = Path(".lulu_project_counter.txt")
 # Login credentials from environment variables
 LULU_USERNAME = os.environ.get("LULU_USERNAME", "")
 LULU_PASSWORD = os.environ.get("LULU_PASSWORD", "")
+cost_text = None
 
 if not LULU_USERNAME or not LULU_PASSWORD:
     print("⚠️  Warning: LULU_USERNAME and LULU_PASSWORD not set in environment")
@@ -98,6 +99,13 @@ async def wait_for_text(page, text, timeout=30000):
     await page.wait_for_selector(f"text={text}", timeout=timeout)
     print(f"✓ Found text: '{text}'")
 
+async def check_for_text(page, text, timeout=30000):
+    """Wait for text to appear on the page."""
+    try:
+        await wait_for_text(page, text, timeout)
+        return True
+    except:
+        return False
 
 async def click_button(page, text):
     """Click a button with the given text."""
@@ -122,7 +130,7 @@ async def check_for_selector(page, selector, timeout=1000):
         start = time.time()
         await page.wait_for_selector(selector, timeout=timeout)
         elapsed = time.time() - start
-        print(f"Waited {int(elapsed*1000)}/{timeout}ms")
+        #print(f"Waited {int(elapsed*1000)}/{timeout}ms")
         return True
     except:
         return False
@@ -218,15 +226,28 @@ async def upload_file(page, file_path, description="file"):
         raise Exception(f"Could not find file input for {description}")
     
     await file_input.set_input_files(str(file_path))
+    await page.wait_for_timeout(500)
     
     # Trigger change event to make sure UI updates
     await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", file_input)
     
-    await page.wait_for_timeout(1000)  # Wait a bit for upload to process
     print(f"✓ Uploaded {description}")
 
 
-async def ensure_logged_in(context, page):
+async def wait_for_captcha(page, text):
+    dots = 0
+    print(f"Waiting for: {repr(text)}")
+    while not await check_for_text(page, text, 1000):
+        # Check if CAPTCHA is present, wait for user to solve it if so.
+        if dots == 0:
+            print("Please complete CAPTCHA/login manually", end='', file=sys.stderr)
+        print(".", end='', file=sys.stderr) 
+        dots += 1
+        sys.stderr.flush()
+    if dots > 0:
+        print(file=sys.stderr)
+
+async def ensure_logged_in(page):
     """
     Ensure user is logged in. Automates login if needed.
     Returns True if logged in successfully.
@@ -234,29 +255,25 @@ async def ensure_logged_in(context, page):
     print("Checking login status...")
     await page.goto(START_URL)
     
-    if await check_for_selector(page, "text=Select a Product Type", timeout=1500):
-        print("✓ Already logged in")
-        return True
-    
-    print("❌ Not logged in. Attempting automated login...")
-    
-    # Check if CAPTCHA is present, wait for user to solve it if so.
     dots = 0
-    while (not await check_for_selector(page, "text=Select a Product Type", timeout=100) and
-           not await check_for_selector(page, "input[name='username']", timeout=100)):
-        if dots == 0:
-            print("Please complete CAPTCHA/login manually", end='', file=sys.stderr)
-        print(".", end='', file=sys.stderr) 
-        dots += 1
-        time.sleep(1)
-        sys.stderr.flush()
+    while True:
+        if await check_for_selector(page, "text=Select a Product Type", timeout=1000):
+            print("✓ Already logged in")
+            return True
+        elif await check_for_selector(page, "input[name=username]", timeout=100):
+            print("❌ Not logged in. Attempting automated login...")
+            return await do_login(page)
+        else:
+            # Check if CAPTCHA is present, wait for user to solve it if so.
+            if dots == 0:
+                print("Please complete CAPTCHA/login manually", end='', file=sys.stderr)
+            print(".", end='', file=sys.stderr) 
+            dots += 1
+            sys.stderr.flush()
     if dots > 0:
         print(file=sys.stderr)
-
-    if await check_for_selector(page, "text=Select a Product Type", timeout=100):
-        print("✓ Already logged in")
-        return True
     
+async def do_login(page):
     await fill_field_by_selector(
         page,
         ["input[name='username'], input[id*='username']"],
@@ -278,11 +295,6 @@ async def ensure_logged_in(context, page):
     )
     
     print("⏳ Waiting for login to complete...")
-    
-    # Wait for successful login
-    if await check_for_selector(page, "text=Select a Product Type", timeout=5000):
-        print("✓ Logged in successfully")
-        return True
     
     # Check again
     if await check_for_selector(page, "text=Select a Product Type", timeout=2000):
@@ -358,18 +370,29 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     print(f"✓ Found {len(file_inputs)} file input(s)")
     
     # Use the first file input (likely the interior PDF)
+    await page.wait_for_timeout(2000)
     print("✓ Page loaded, starting upload...")
+    
     await upload_file(page, pdf_path, "pdf book")
     
     # Wait for upload flow to start (avoid race condition)
     print("⏳ Waiting for upload to start...")
     if await check_for_selector(page, "text=Your file is uploading", timeout=5000):
         print("✓ Upload started")
+    else:
+        # Check if we reverted to upload button
+        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
+            print("⚠️  Upload failed, page reverted to upload button")
+            return False
     
     # Wait for validation to start
     print("⏳ Waiting for validation...")
     if await check_for_selector(page, "text=Your file is validating", timeout=30000):
         print("✓ Validation started")
+    else:
+        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
+            print("⚠️  Upload lost during validation, page reverted to upload button")
+            return False
     
     # Wait for final result - success or error
     print("⏳ Waiting for validation result...")
@@ -380,9 +403,13 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         print("❌ Page 2 failed - PDF upload error")
         return False
     elif not success:
+        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
+            print("⚠️  Upload lost, page reverted to upload button")
+            return False
         print("⚠️  Page 2 status unclear - check manually")
         return False
-
+    
+    # Success! Break out of retry loop
     print("✓ PDF validated successfully")
     
     # Get PDF info for page count
@@ -398,6 +425,55 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         num_pages = pdf_info['page_count']
         print(f"📖 Using PDF page count: {num_pages}")
     
+    # Set up AJAX request logging to capture price calculation requests
+    print("📊 Setting up AJAX logging...")
+    ajax_log_file = Path("lulu_ajax_requests.log")
+    ajax_requests = []
+    
+    async def log_request(request):
+        # Filter for lulu.com domain only
+        if request.resource_type in ["xhr", "fetch"]:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(request.url).netloc
+                if domain.endswith('lulu.com'):
+                    req_data = {
+                        'url': request.url,
+                        'method': request.method,
+                        'post_data': None,
+                        'response': None
+                    }
+                    
+                    # Try to get POST data, handle binary data gracefully
+                    try:
+                        req_data['post_data'] = request.post_data
+                    except:
+                        req_data['post_data'] = "<binary or non-UTF8 data>"
+                    
+                    ajax_requests.append(req_data)
+            except:
+                pass
+    
+    async def log_response(response):
+        # Filter for lulu.com domain only
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(response.url).netloc
+            if response.request.resource_type in ["xhr", "fetch"] and domain.endswith('lulu.com'):
+                # Find the matching request
+                for req in ajax_requests:
+                    if req['url'] == response.url and req['response'] is None:
+                        try:
+                            req['response'] = await response.text()
+                        except Exception as e:
+                            req['response'] = f"<error reading response: {e}>"
+                        break
+        except:
+            pass
+    
+    page.on("request", log_request)
+    page.on("response", log_response)
+    
     # Interior Color
     await select_radio(page, "Standard Black & White")
     
@@ -410,36 +486,108 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     else:
         await select_radio(page, "Paperback Saddle Stitch")
 
-    # Cover Finish
+    # Cover Finish (this is the last selection before price)
     await select_radio(page, "Glossy")
 
-    # Wait for print cost to appear
+    # Wait for print cost to appear with actual value (not $0.00)
     await wait_for_text(page, "Print Cost", timeout=10000)
     
-    # Extract and print the cost
-    cost_elem = await page.query_selector("[data-testid='print-cost']")
-    if cost_elem:
-        cost_text = await cost_elem.inner_text()
-        print(f"💰 Print Cost: {cost_text}")
+    # Wait for actual price to load (it starts as $0.00)
+    print("⏳ Waiting for price to calculate...")
+    global cost_text
+    for attempt in range(30):  # Wait up to 30 seconds
+        await page.wait_for_timeout(1000)
+        cost_elem = await page.query_selector("[data-testid='print-cost']")
+        if cost_elem:
+            cost_text = await cost_elem.inner_text()
+            if cost_text and cost_text.strip() != "$0.00":
+                print(f"💰 Print Cost: {cost_text}")
+                break
+    else:
+        print("⚠️  Price still showing $0.00 after 30 seconds")
+    
+    # Give responses time to complete
+    await page.wait_for_timeout(1000)
+    
+    # Write AJAX requests to file
+    with open(ajax_log_file, 'w') as f:
+        f.write(f"AJAX Requests Log - {len(ajax_requests)} requests captured\n")
+        f.write("=" * 80 + "\n\n")
+        for i, req in enumerate(ajax_requests):
+            f.write(f"Request {i+1}:\n")
+            f.write(f"  URL: {req['url']}\n")
+            f.write(f"  Method: {req['method']}\n")
+            if req['post_data']:
+                f.write(f"  POST Data: {req['post_data']}\n")
+            if req['response']:
+                f.write(f"  Response: {req['response']}\n")
+            else:
+                f.write(f"  Response: <no response captured>\n")
+            f.write("\n" + "-" * 80 + "\n\n")
+    
+    print(f"📝 Logged {len(ajax_requests)} AJAX requests to {ajax_log_file}")
 
     # Select "Upload Your Cover"
     await select_radio(page, "Upload Your Cover")
     
-    # Wait for cover upload section to be ready
-    await page.wait_for_timeout(1000)
+    # Save reference to the first file input (interior PDF)
+    initial_file_inputs = await page.query_selector_all("input[type='file']")
+    first_input = initial_file_inputs[0] if initial_file_inputs else None
+    print(f"📍 Tracked first file input (interior)")
     
-    # Upload cover - find the second file input (index 1)
+    # Wait for cover upload section to appear - look for a NEW file input
+    print("⏳ Waiting for cover upload section to load...")
+    cover_input = None
+    for attempt in range(10):
+        await page.wait_for_timeout(1000)
+        file_inputs = await page.query_selector_all("input[type='file']")
+        print(f"  Attempt {attempt+1}: Found {len(file_inputs)} file inputs")
+        
+        # Look for a file input that isn't the first one
+        for inp in file_inputs:
+            if first_input and inp != first_input:
+                cover_input = inp
+                print(f"✓ Found new file input (cover)")
+                break
+            elif not first_input and len(file_inputs) > 1:
+                # If we lost reference to first input, just use second one
+                cover_input = file_inputs[1]
+                print(f"✓ Found second file input (cover)")
+                break
+        
+        if cover_input:
+            break
+    
+    if not cover_input:
+        raise Exception("Cover file input did not appear after 10 seconds")
+    
+    # Upload cover
     print(f"📤 Uploading cover: {cover_path}")
-    file_inputs = await page.query_selector_all("input[type='file']")
-    if len(file_inputs) < 2:
-        raise Exception("Cover file input not found")
-    
-    cover_input = file_inputs[1]  # Second file input is for cover
     await cover_input.set_input_files(str(cover_path))
     await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", cover_input)
     
     print("⏳ Waiting for cover to upload and validate...")
-    await page.wait_for_timeout(5000)
+    # Wait for cover validation messages
+    if await check_for_selector(page, "text=Your file is uploading", timeout=10000):
+        print("✓ Cover upload started")
+    
+    if await check_for_selector(page, "text=Your file is normalizing", timeout=30000):
+        print("✓ Cover validation started")
+    
+    # Wait for cover validation to complete
+    success = await check_for_selector(page, "text=You successfully uploaded a cover file!", timeout=120000)
+    error = await check_for_selector(page, "text=We found some fonts", timeout=1000)
+    
+    if error:
+        print("❌ Cover validation failed - font embedding issue")
+        return False
+    elif success:
+        print("✓ Cover validated successfully")
+    else:
+        print("⚠️  Cover validation status unclear")
+
+    # Wait for the preview to generate
+    await wait_for_text(page, "Use this preview window to see how your Book will look.", timeout=10000)
     
     # Wait for user to review
     input("⏸️  Press Enter to continue after reviewing the book preview...")
@@ -450,6 +598,38 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     print("✓ Page 2 complete")
     return True
 
+async def create_book_page3(page):
+    await click_button(page, "Confirm and Publish")
+
+    print("✓ Page 3 complete")
+    return True
+
+async def create_book_page4(page):
+    await click_button(page, "Add to Cart")
+
+    print("✓ Page 4 complete")
+    return True
+
+async def create_book_page5(page):
+    # Verify the total is what we expect
+    print(f"Waiting for cart total to be: {cost_text}")
+    print("This may need the user to delete old cart items.")
+    lastMsg = None
+    while True:
+        cost_elem = await page.query_selector("[data-testid='subtotal-amount']")
+        if cost_elem:
+            cart_cost_text = await cost_elem.inner_text()
+            if cart_cost_text == cost_text: break
+            msg = f"💰 Cost: {repr(cart_cost_text)} (should be {repr(cost_text)})"
+            if msg != lastMsg:
+                print(msg)
+                lastMsg = msg
+        await page.wait_for_timeout(500)
+
+    await click_button(page, "Checkout")
+
+    print("✓ Page 5 complete")
+    return True
 
 def get_spine_width(page_count):
     """
@@ -459,7 +639,7 @@ def get_spine_width(page_count):
     Based on Lulu's hardcover spine width table.
     """
     spine_table = [
-        (0, 23, None),
+        (2, 23, 0),
         (24, 84, 6),
         (85, 140, 13),
         (141, 168, 16),
@@ -493,18 +673,15 @@ def get_spine_width(page_count):
         if min_pages <= page_count <= max_pages:
             return width_mm
     
-    # If beyond 800 pages, extrapolate (though this is unlikely)
-    if page_count > 800:
-        return 54 + ((page_count - 800) // 28) * 2
-    
     return None
 
 
-def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, front_height_mm, spine_width_mm):
+def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, front_height_mm, spine_width_mm, is_hardcover=True):
     """
-    Generate a hardcover wraparound PDF.
+    Generate a wraparound cover PDF for hardcover or paperback.
     
     For hardcover: printed 0.75" larger than trim size, wrapped around board.
+    For paperback: includes 0.125" (3.175mm) bleed on all outer edges.
     
     Args:
         output_path: Where to save the cover PDF
@@ -514,74 +691,122 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         front_width_mm: Front cover width (trim size)
         front_height_mm: Front cover height (trim size)
         spine_width_mm: Spine width in mm
+        is_hardcover: True for hardcover, False for paperback
     """
-    # Hardcover is 0.75" (19.05mm) larger than trim size
-    wrap_extension_mm = 19.05
+    if is_hardcover:
+        # Hardcover is 0.75" (19.05mm) larger than trim size
+        wrap_extension_mm = 19.05
+        
+        # Calculate dimensions
+        front_total_width_mm = front_width_mm + (2 * wrap_extension_mm)
+        front_total_height_mm = front_height_mm + (2 * wrap_extension_mm)
+        
+        # Total cover width: back + spine + front
+        total_width_mm = front_total_width_mm + spine_width_mm + front_total_width_mm
+        total_height_mm = front_total_height_mm
+    else:
+        # Paperback has 0.125" (3.175mm) bleed on outer edges
+        bleed_mm = 3.175
+        
+        # Calculate dimensions
+        # Width: bleed + back + spine + front + bleed
+        total_width_mm = bleed_mm + front_width_mm + spine_width_mm + front_width_mm + bleed_mm
+        # Height: bleed + height + bleed
+        total_height_mm = bleed_mm + front_height_mm + bleed_mm
     
-    # Calculate dimensions
-    # Front/back each: trim_size + wrap_extension on all sides
-    front_total_width_mm = front_width_mm + (2 * wrap_extension_mm)
-    front_total_height_mm = front_height_mm + (2 * wrap_extension_mm)
-    
-    # Total cover width: back + spine + front
-    total_width_mm = front_total_width_mm + spine_width_mm + front_total_width_mm
-    total_height_mm = front_total_height_mm
-    
-    print(f"📐 Cover dimensions: {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
-    print(f"   Front: {front_total_width_mm:.1f}mm x {front_total_height_mm:.1f}mm")
+    print(f"📐 Cover dimensions ({'Hardcover' if is_hardcover else 'Paperback'}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
+    print(f"   Interior: {front_width_mm:.1f}mm x {front_height_mm:.1f}mm")
     print(f"   Spine: {spine_width_mm}mm")
-    print(f"   Back: {front_total_width_mm:.1f}mm x {front_total_height_mm:.1f}mm")
     
     # Convert to points for ReportLab (1mm = 2.83465 points)
     total_width_pts = total_width_mm * 2.83465
     total_height_pts = total_height_mm * 2.83465
     
-    # Create PDF
+    # Create PDF with embedded fonts
     c = canvas.Canvas(str(output_path), pagesize=(total_width_pts, total_height_pts))
+    
+    # Use TrueType fonts which will be embedded
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    
+    # Try multiple common font locations
+    font_paths = [
+        ('/usr/share/fonts/TTF/DejaVuSans.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf'),
+    ]
+    
+    title_font = None
+    body_font = None
+    
+    from pathlib import Path
+    for regular_path, bold_path in font_paths:
+        try:
+            if Path(regular_path).exists() and Path(bold_path).exists():
+                pdfmetrics.registerFont(TTFont('DejaVuSans', regular_path))
+                pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', bold_path))
+                title_font = 'DejaVuSans-Bold'
+                body_font = 'DejaVuSans'
+                print(f"  Using DejaVu fonts from {regular_path} (will be embedded)")
+                break
+        except:
+            continue
+    
+    if not title_font:
+        # If no TrueType fonts found, we have a problem - Lulu requires embedded fonts
+        # ReportLab's standard fonts (Helvetica) are NOT embedded by default
+        print("  WARNING: Could not find TrueType fonts. Using Helvetica (may not be embedded!)")
+        title_font = 'Helvetica-Bold'
+        body_font = 'Helvetica'
     
     # Set background to white
     c.setFillColorRGB(1, 1, 1)
     c.rect(0, 0, total_width_pts, total_height_pts, fill=True, stroke=False)
     
     # Calculate positions (in points)
-    front_start_x = (front_total_width_mm + spine_width_mm) * 2.83465
-    spine_start_x = front_total_width_mm * 2.83465
+    if is_hardcover:
+        front_start_x = (front_total_width_mm + spine_width_mm) * 2.83465
+        spine_start_x = front_total_width_mm * 2.83465
+        front_center_x = front_start_x + (front_total_width_mm * 2.83465 / 2)
+    else:
+        # For paperback: bleed + back + spine
+        front_start_x = (bleed_mm + front_width_mm + spine_width_mm) * 2.83465
+        spine_start_x = (bleed_mm + front_width_mm) * 2.83465
+        front_center_x = front_start_x + (front_width_mm * 2.83465 / 2)
     
     # Front cover text
     c.setFillColorRGB(0, 0, 0)
     
     # Title on front (large, centered)
-    c.setFont("Helvetica-Bold", 36)
-    front_center_x = front_start_x + (front_total_width_mm * 2.83465 / 2)
+    c.setFont(title_font, 36)
     c.drawCentredString(front_center_x, total_height_pts * 0.6, title)
     
     # Subtitle on front (medium)
     if subtitle:
-        c.setFont("Helvetica", 24)
+        c.setFont(body_font, 24)
         c.drawCentredString(front_center_x, total_height_pts * 0.5, subtitle)
     
     # Author on front (bottom)
-    c.setFont("Helvetica", 18)
+    c.setFont(body_font, 18)
     c.drawCentredString(front_center_x, total_height_pts * 0.2, author)
     
-    # Spine text (vertical, centered)
-    spine_center_x = spine_start_x + (spine_width_mm * 2.83465 / 2)
-    
-    c.saveState()
-    c.translate(spine_center_x, total_height_pts / 2)
-    c.rotate(90)
-    
-    c.setFont("Helvetica-Bold", 14)
-    # Draw title and author on spine
-    spine_text = f"{title}  —  {author}"
-    c.drawCentredString(0, 0, spine_text)
-    
-    c.restoreState()
+    # Spine text (vertical, centered) - only if spine is wide enough
+    if spine_width_mm >= 6:
+        spine_center_x = spine_start_x + (spine_width_mm * 2.83465 / 2)
+        
+        c.saveState()
+        c.translate(spine_center_x, total_height_pts / 2)
+        c.rotate(90)
+        
+        c.setFont(title_font, 14)
+        spine_text = f"{title}  —  {author}"
+        c.drawCentredString(0, 0, spine_text)
+        
+        c.restoreState()
     
     # Back cover is blank (as requested)
     
+    # Save with embedded fonts
     c.save()
-    print(f"✓ Generated cover PDF: {output_path}")
+    print(f"✓ Generated cover PDF with embedded fonts: {output_path}")
 
 
 async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle="", author="Anonymous"):
@@ -611,11 +836,16 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
     
     # Calculate spine width
     spine_width_mm = get_spine_width(pdf_info['page_count'])
-    if spine_width_mm:
-        print(f"📏 Spine width for {pdf_info['page_count']} pages: {spine_width_mm}mm")
-    else:
-        print(f"⚠️  Using default spine width (book has {pdf_info['page_count']} pages)")
+    is_hardcover = pdf_info['page_count'] > 23
+    
+    if is_hardcover and spine_width_mm:
+        print(f"📏 Hardcover spine width for {pdf_info['page_count']} pages: {spine_width_mm}mm")
+    elif is_hardcover:
+        print(f"⚠️  Using default hardcover spine width (book has {pdf_info['page_count']} pages)")
         spine_width_mm = 6  # Default fallback
+    else:
+        print(f"📏 Paperback (no spine width needed, {pdf_info['page_count']} pages)")
+        spine_width_mm = 0  # Paperback with < 24 pages has no spine
     
     # Generate cover PDF
     cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
@@ -627,7 +857,9 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         author,
         pdf_info['width_mm'],
         pdf_info['height_mm'],
-        spine_width_mm
+        spine_width_mm,
+        is_hardcover=is_hardcover
+    
     )
     
     async with async_playwright() as p:
@@ -646,7 +878,7 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         print("🚀 Starting book upload automation...")
         
         # Ensure we're logged in
-        if not await ensure_logged_in(context, page):
+        if not await ensure_logged_in(page):
             print("❌ Failed to log in")
             await context.close()
             return
@@ -659,6 +891,18 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
             print("❌ Failed to upload PDF")
             await context.close()
             return
+
+        # Page 3: Finalize
+        await create_book_page3(page)
+
+        # Page 4: Add to cart
+        await create_book_page4(page)
+
+        # Page 5: Cart Preview
+        await wait_for_captcha(page, "Your Cart")
+        await create_book_page5(page)
+
+        # Page 6: Shipping info
         
         # TODO: Add more pages here as we implement them
         print("⏸️  Pausing for manual continuation...")
