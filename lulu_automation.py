@@ -51,6 +51,29 @@ LULU_USERNAME = os.environ.get("LULU_USERNAME", "")
 LULU_PASSWORD = os.environ.get("LULU_PASSWORD", "")
 cost_text = None
 
+BOOK_SIZES = {
+    ("Pocket Book", 108, 175),
+    ("Novella", 127, 203),
+    ("Digest", 140, 216),
+    ("A5", 148, 210),
+    ("US Trade", 152, 229),
+    ("Royal", 156, 234),
+    ("Executive", 178, 254),
+    ("Crown Quarto", 189, 246),
+    ("Small Square", 190, 190),
+    ("A4", 210, 297),
+    ("Square", 216, 216),
+    ("US Letter", 216, 279),
+    ("Small Landscape", 229, 179),
+    ("US Letter Landscape", 279, 216),
+    ("A4 Landscape", 297, 210),
+}
+# Pages: 2-800 in general, varies by binding type
+BINDINGS = ("Paperback Perfect Bound", "Paperback Coil Bound", "Paperback Saddle Stitch", "Hardcover Case Wrap", "Hardcover Linen Wrap")
+COLOR = ("Standard B&W", "Premium B&W", "Standard Color", "Premium Color")
+PAPER_TYPES = ("60# Uncoated Cream", "60# Uncoated White", "80# Coated White")
+COVER_FINISH = ("Glossy", "Matte")
+
 if not LULU_USERNAME or not LULU_PASSWORD:
     print("⚠️  Warning: LULU_USERNAME and LULU_PASSWORD not set in environment")
     print("   Set them in a .env file or export them before running")
@@ -108,6 +131,40 @@ async def wait_for_text(page, text, timeout=30000):
     print(f"⏳ Waiting for text: '{text}'")
     await page.wait_for_selector(f"text={text}", timeout=timeout)
     print(f"✓ Found text: '{text}'")
+
+async def wait_for_any(page, conditions, poll_interval_ms=500, timeout_ms=5000):
+    """
+    Wait for any of multiple conditions to be true.
+    
+    Args:
+        page: Playwright page object
+        conditions: List of (selector, description) tuples to check
+        poll_interval_ms: How often to check (milliseconds)
+        timeout_ms: Overall timeout in milliseconds
+    
+    Returns:
+        Description string of the condition that was met, or None if timeout
+    
+    Example:
+        result = await wait_for_any(page, [
+            ("text=Success", "success"),
+            ("text=Error", "error"),
+            ("button=Retry", "retry")
+        ], timeout_ms=10000)
+        if result == "success":
+            print("Success!")
+        elif result == "error":
+            print("Error occurred")
+    """
+    iterations = timeout_ms // poll_interval_ms
+    
+    for i in range(iterations):
+        for idx, (selector, description) in enumerate(conditions):
+            if await check_for_selector(page, selector, timeout=100):
+                return description
+        await page.wait_for_timeout(poll_interval_ms)
+    
+    return None
 
 async def check_for_text(page, text, timeout=30000):
     """Wait for text to appear on the page."""
@@ -385,42 +442,67 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
     
     await upload_file(page, pdf_path, "pdf book")
     
-    # Wait for upload flow to start (avoid race condition)
+    # Wait for upload flow to start OR detect immediate failure
     print("⏳ Waiting for upload to start...")
-    if await check_for_selector(page, "text=Your file is uploading", timeout=5000):
-        print("✓ Upload started")
-    else:
-        # Check if we reverted to upload button
-        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
-            print("⚠️  Upload failed, page reverted to upload button")
-            return "RETRY"
+    result = await wait_for_any(page, [
+        ("text=Your file is uploading", "upload_started"),
+    ], timeout_ms=5000)
+    
+    match result:
+        case "upload_started":
+            print("✓ Upload started")
+            print("⏳ Waiting for button to disappear")
+            await page.locator("[data-testid='interior-file-upload-button']").wait_for(state='hidden')
+            await page.wait_for_timeout(200)
+        case None:
+            print("⚠️  Upload status unclear after 5 seconds")
+            return False
+        case _:
+            assert False, f"Unexpected result from wait_for_any: {result}"
     
     # Wait for validation to start
     print("⏳ Waiting for validation...")
-    if await check_for_selector(page, "text=Your file is validating", timeout=30000):
-        print("✓ Validation started")
-    else:
-        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
-            print("⚠️  Upload lost during validation, page reverted to upload button")
+    result = await wait_for_any(page, [
+        ("text=Your file is validating", "upload_validating"),
+        ("[data-testid='interior-file-upload-button']", "reset")
+    ], timeout_ms=5000)
+    match result:
+        case "upload_validating":
+            print("✓ Validation started")
+        case "reset":
+            print("⚠️  Upload lost, page reverted to upload button")
+            buttons = await page.query_selector_all("text=Upload your PDF file")
+            for i, btn in enumerate(buttons):
+                visible = await btn.is_visible()
+                print(f"Button {i}: visible={visible}; {btn}")
             return "RETRY"
+        case None:
+            print("⚠️  Upload status unclear after 5 seconds")
+        case _:
+            assert False, f"Unexpected result from wait_for_any: {result}"
     
     # Wait for final result - success or error
     print("⏳ Waiting for validation result...")
-    success = await check_for_selector(page, "text=Your Book file was successfully uploaded!", timeout=120000)
-    error = await check_for_selector(page, "[data-testid*='file-upload-notification-error']", timeout=1000)
+    result = await wait_for_any(page, [
+        ("text=Your Book file was successfully uploaded!", "success"),
+        ("[data-testid*='file-upload-notification-error']", "error"),
+        ("[data-testid='interior-file-upload-button']", "reset")
+    ], timeout_ms=120000)
     
-    if error:
-        print("❌ Page 2 failed - PDF upload error")
-        return False
-    elif not success:
-        if await check_for_selector(page, "text=Upload your PDF file", timeout=1000):
+    match result:
+        case "success":
+            print("✓ PDF validated successfully")
+        case "error":
+            print("❌ Page 2 failed - PDF upload error")
+            return False
+        case "reset":
             print("⚠️  Upload lost, page reverted to upload button")
             return "RETRY"
-        print("⚠️  Page 2 status unclear - check manually")
-        return False
-    
-    # Success! Break out of retry loop
-    print("✓ PDF validated successfully")
+        case None:
+            print("⚠️  Page 2 status unclear - check manually")
+            return False
+        case _:
+            assert False, f"Unexpected validation result: {result}"
     
     # Extract page count from the page (should match our PDF info)
     page_count_input = await page.query_selector("input[id='page-count']")
@@ -578,16 +660,21 @@ async def create_book_page2(page, pdf_path, cover_path, title="Untitled Book", s
         print("✓ Cover validation started")
     
     # Wait for cover validation to complete
-    success = await check_for_selector(page, "text=You successfully uploaded a cover file!", timeout=120000)
-    error = await check_for_selector(page, "text=We found some fonts", timeout=1000)
+    result = await wait_for_any(page, [
+        ("text=You successfully uploaded a cover file!", "success"),
+        ("text=We found some fonts", "font_error")
+    ], timeout_ms=120000)
     
-    if error:
-        print("❌ Cover validation failed - font embedding issue")
-        return False
-    elif success:
-        print("✓ Cover validated successfully")
-    else:
-        print("⚠️  Cover validation status unclear")
+    match result:
+        case "success":
+            print("✓ Cover validated successfully")
+        case "font_error":
+            print("❌ Cover validation failed - font embedding issue")
+            return False
+        case None:
+            print("⚠️  Cover validation status unclear")
+        case _:
+            assert False, f"Unexpected cover validation result: {result}"
 
     # Wait for the preview to generate
     await wait_for_text(page, "Use this preview window to see how your Book will look.", timeout=10000)
@@ -947,7 +1034,12 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Spine text (vertical, centered) - only if spine is wide enough
     if spine_width_mm >= 6:
-        spine_center_x = total_width_pts / 2
+        spine_center_x = spine_start_x + (spine_width_mm * MM_TO_POINTS / 2)
+        
+        # DEBUG: Draw a circle at spine center
+        c.setStrokeColorRGB(1, 0, 0)  # Red
+        c.setFillColorRGB(1, 0, 0)    # Red
+        c.circle(spine_center_x, total_height_pts / 2, 5, stroke=1, fill=1)
         
         c.saveState()
         c.translate(spine_center_x, total_height_pts / 2)
@@ -958,7 +1050,8 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
             spine_text = f"{title}  —  {subtitle}"
         else:
             spine_text = f"{title}"
-        c.drawCentredString(0, -14/3, spine_text)
+        # Draw text with vertical offset - after rotation, y=0 is the baseline. Just a rough guess.
+        c.drawCentredString(0, -13/3, spine_text)
         
         c.restoreState()
     
@@ -1125,3 +1218,4 @@ if __name__ == "__main__":
     
     print(f"❌ Failed after {max_retries} retry attempts")
     sys.exit(1)
+
