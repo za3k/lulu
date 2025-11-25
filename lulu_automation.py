@@ -913,11 +913,12 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Calculate positions (in points)
     if binding == "Hardcover Case Wrap":
-        # Back panel: outer_wrap + trim
-        panel_width_mm = wrap_mm + front_width_mm
-        # Front panel starts after: back_panel + spine
-        front_start_x = (panel_width_mm + spine_width_mm) * 2.83465
-        spine_start_x = panel_width_mm * 2.83465
+        # Layout: [overhang][back_panel][spine][front_panel][overhang]
+        # Overhang is split on left and right outer edges
+        # Spine starts after: overhang + back_panel
+        spine_start_x = (overhang_mm + panel_width_mm) * 2.83465
+        # Front starts after: overhang + back_panel + spine
+        front_start_x = (overhang_mm + panel_width_mm + spine_width_mm) * 2.83465
         front_center_x = front_start_x + (panel_width_mm * 2.83465 / 2)
     else:
         # For paperback: bleed + back + spine
