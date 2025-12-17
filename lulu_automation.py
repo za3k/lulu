@@ -216,10 +216,7 @@ async def select_radio(page, value):
 
 async def fill_field(page, label, value):
     """Fill a text field identified by its label."""
-    if label == "Password":
-        print(f"✏️  Filling field '{label}' with: '------'")
-    else:
-        print(f"✏️  Filling field '{label}' with: '{value}'")
+    print(f"✏️  Filling field '{label}' with: '{value}'")
     
     # Try standard patterns first (next sibling, following sibling, placeholder)
     simple_selectors = [
@@ -256,7 +253,10 @@ async def fill_field_by_selector(page, selectors, value, description="field"):
         value: Value to fill
         description: Description for logging
     """
-    print(f"✏️  Filling {description} with: '{value}'")
+    if description == "password":
+        print(f"✏️  Filling {description} with: '------'")
+    else:
+        print(f"✏️  Filling {description} with: '{value}'")
     for selector in selectors:
         if await check_for_selector(page, selector, timeout=500):
             await page.fill(selector, value)
