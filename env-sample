@@ -1,6 +1,16 @@
+# You need to make a Lulu account to use this script.
 LULU_USERNAME=user@example.com
 LULU_PASSWORD=hunter1
 
+# Book generation options
+BOOK_PATH=/home/john/book.pdf
+BOOK_AUTHOR="John Smith"
+BOOK_TITLE="How to Read"
+BOOK_SUBTITLE="A Guide for an Unclear Audience"
+COVER_BG_COLOR=ffffff
+COVER_FG_COLOR=000000
+
+# This is used for billing and shipping only
 NAME_FIRST=John
 NAME_LAST=Smith
 COUNTRY="United States of America"

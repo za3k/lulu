@@ -4,13 +4,14 @@ Lulu.com book upload automation
 
 Author: Claude (Anthropic AI Assistant)
 License: MIT
+Additional credit to: Zachary Vance
 
 To use with a .env file:
     pip install python-dotenv --break-system-packages
     
     Create a .env file with:
-    LULU_USERNAME=your-username
-    LULU_PASSWORD=your-password
+    cp env-sample .env
+    nano .env
     
     Then run: python lulu_automation.py
 """
@@ -212,7 +213,10 @@ async def select_radio(page, value):
 
 async def fill_field(page, label, value):
     """Fill a text field identified by its label."""
-    print(f"✏️  Filling field '{label}' with: '{value}'")
+    if label == "Password":
+        print(f"✏️  Filling field '{label}' with: '{value}'")
+    else:
+        print(f"✏️  Filling field '{label}' with: '------'")
     
     # Try standard patterns first (next sibling, following sibling, placeholder)
     simple_selectors = [
@@ -786,7 +790,7 @@ async def create_book_page9(page):
     elif a.strip() in "nN":
         return False
 
-async def create_book_page10(page)
+async def create_book_page10(page):
     await wait_for_text(page, "Thanks for ordering")
     how_long = await page.get_by_test_id("shipping-method-delivery-time").text_content()
     print(f"How long it will be: {how_long}")
@@ -1009,8 +1013,22 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     if not title_font:
         raise Exception("DejaVuSans font not found -- unable to embed PDF fonts for Lulu")
     
-    # Set background to white
-    c.setFillColorRGB(1, 1, 1)
+    # Get colors from environment or use defaults
+    # Background: RGB hex like "2c5f7a" (teal-blue)
+    # Foreground: RGB hex like "ffffff" (white) or "000000" (black)
+    bg_color = os.environ.get("COVER_BG_COLOR", "ffffff")  # Default white
+    fg_color = os.environ.get("COVER_FG_COLOR", "000000")  # Default black
+    
+    # Parse hex colors to RGB 0-1 range
+    def hex_to_rgb(hex_str):
+        hex_str = hex_str.lstrip('#')
+        return tuple(int(hex_str[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+    
+    bg_r, bg_g, bg_b = hex_to_rgb(bg_color)
+    fg_r, fg_g, fg_b = hex_to_rgb(fg_color)
+    
+    # Set background color
+    c.setFillColorRGB(bg_r, bg_g, bg_b)
     c.rect(0, 0, total_width_pts, total_height_pts, fill=True, stroke=False)
     
     # Calculate positions (in points)
@@ -1028,8 +1046,8 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         spine_start_x = (bleed_mm + front_width_mm) * MM_TO_POINTS
         front_center_x = front_start_x + (front_width_mm * MM_TO_POINTS / 2)
     
-    # Front cover text
-    c.setFillColorRGB(0, 0, 0)
+    # Front cover text (use foreground color)
+    c.setFillColorRGB(fg_r, fg_g, fg_b)
     
     # Title on front (large, centered)
     c.setFont(title_font, 36)
@@ -1050,7 +1068,8 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         
         c.saveState()
         c.translate(spine_center_x, total_height_pts / 2)
-        c.rotate(90)
+        # Rotate -90 so text reads bottom-to-top when book is lying flat (front cover up)
+        c.rotate(-90)
         
         c.setFont(title_font, 14)
         if subtitle:
@@ -1179,14 +1198,13 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Automate Lulu.com book upload')
     parser.add_argument('pdf_path', nargs='?', help='Path to PDF file to upload (not needed with --cart)')
-    parser.add_argument('title', nargs='?', default='Untitled Book', help='Book title')
-    parser.add_argument('subtitle', nargs='?', default='', help='Book subtitle')
-    parser.add_argument('author', nargs='?', default='Anonymous', help='Author name')
     parser.add_argument('--cart', type=str, metavar='COST', help='Skip to cart mode with expected cost (e.g., "4.00 USD")')
     
     args = parser.parse_args()
     
     cart_mode = args.cart is not None
+
+    args.pdf_path = args.pdf_path or os.environ.get("BOOK_PATH", "")
     
     if not cart_mode and not args.pdf_path:
         parser.error("pdf_path is required unless using --cart")
@@ -1200,11 +1218,11 @@ if __name__ == "__main__":
         try:
             result = asyncio.run(automate_book_upload(
                 args.pdf_path,
-                args.title,
-                args.subtitle,
-                args.author,
+                os.environ.get("BOOK_TITLE", ""),
+                os.environ.get("BOOK_SUBTITLE", ""),
+                os.environ.get("BOOK_AUTHOR", ""),
                 cart_mode=cart_mode,
-                cart_cost=args.cart
+                cart_cost=args.cart,
             ))
             
             if result == "RETRY":
