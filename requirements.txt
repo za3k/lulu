@@ -1,0 +1,12 @@
+# Browser automation
+playwright>=1.40.0
+
+# PDF handling
+PyPDF2>=3.0.0
+reportlab>=4.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Note: After installing, run:
+# playwright install chromium
