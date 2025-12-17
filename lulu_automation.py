@@ -22,11 +22,14 @@ from pathlib import Path
 from pathlib import Path
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfReader
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph
 from urllib.parse import urlparse
 import argparse
 import asyncio
@@ -214,9 +217,9 @@ async def select_radio(page, value):
 async def fill_field(page, label, value):
     """Fill a text field identified by its label."""
     if label == "Password":
-        print(f"✏️  Filling field '{label}' with: '{value}'")
-    else:
         print(f"✏️  Filling field '{label}' with: '------'")
+    else:
+        print(f"✏️  Filling field '{label}' with: '{value}'")
     
     # Try standard patterns first (next sibling, following sibling, placeholder)
     simple_selectors = [
@@ -928,7 +931,7 @@ def get_spine_width(page_count, binding):
     return None
 
 
-def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, front_height_mm, num_pages, binding):
+def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page_height_mm, num_pages, binding):
     """
     Generate a wraparound cover PDF for hardcover or paperback.
     
@@ -957,28 +960,44 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
         wrap_mm = 19.05  # 0.75 inches
         overhang_mm = 3.175 # 0.125" inches
         
-        # Each panel: outer_edge_wrap + trim_width (no wrap on spine side)
-        panel_width_mm = wrap_mm + front_width_mm
+        # Horizontal layout
+        # "Overhang" refers to how a book cover is bigger than the book pages (hangs over)
+        # "Wrap" is the part of the cover that's wrapped around and mostly not visible -- but needs filled in so you don't see a border.
+        # "Margin" is just standard advice not to put stuff to the very edge of a cover. I don't think there's a specific number.
+        #
+        # wrap | (BACK) | spine | (FRONT) | wrap
+        #    BACK = overhang + page_width           FRONT = page_width + overhang
+        #    BACK = margin + usable_width + margin  FRONT = margin + usable_width + margin
+        #
+        # Vertical layout
+        #
+        # wrap | (COVER) | wrap
+        # COVER = overhang + page_height + overhang
+        # COVER = margin + usable_height + margin
+
+        # Each panel
+        panel_width_mm = overhang_mm + page_width_mm
+        panel_height_mm = overhang_mm + page_height_mm + overhang_mm
         
-        # Total width: back_panel + spine + front_panel + overhang
-        total_width_mm = panel_width_mm + spine_width_mm + panel_width_mm + (2 * overhang_mm)
+        # Total width: wrap + back_panel + spine + front_panel + wrap
+        total_width_mm = wrap_mm + panel_width_mm + spine_width_mm + panel_width_mm + wrap_mm
         
         # Total height: trim + top_wrap + bottom_wrap + overhang  
-        total_height_mm = front_height_mm + (2 * wrap_mm) + (2 * overhang_mm)
+        total_height_mm = wrap_mm + panel_height_mm + wrap_mm
     elif binding == "Paperback Saddle Stitch":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
         
         # Calculate dimensions
         # Width: bleed + back + spine + front + bleed
-        total_width_mm = bleed_mm + front_width_mm + spine_width_mm + front_width_mm + bleed_mm
+        total_width_mm = bleed_mm + page_width_mm + spine_width_mm + page_width_mm + bleed_mm
         # Height: bleed + height + bleed
-        total_height_mm = bleed_mm + front_height_mm + bleed_mm
+        total_height_mm = bleed_mm + page_height_mm + bleed_mm
     else:
         assert False, f"Don't know how to calculte cover size for: {binding}" 
     
     print(f"📐 Cover dimensions ({binding}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
-    print(f"   Interior: {front_width_mm:.1f}mm x {front_height_mm:.1f}mm")
+    print(f"   Interior: {page_width_mm:.1f}mm x {page_height_mm:.1f}mm")
     print(f"   Spine: {spine_width_mm}mm")
     
     # Convert to points for ReportLab
@@ -1033,30 +1052,73 @@ def generate_cover_pdf(output_path, title, subtitle, author, front_width_mm, fro
     
     # Calculate positions (in points)
     if binding == "Hardcover Case Wrap":
-        # Layout: [overhang][back_panel][spine][front_panel][overhang]
-        # Overhang is split on left and right outer edges
-        # Spine starts after: overhang + back_panel
-        spine_start_x = (overhang_mm + panel_width_mm) * MM_TO_POINTS
-        # Front starts after: overhang + back_panel + spine
-        front_start_x = (overhang_mm + panel_width_mm + spine_width_mm) * MM_TO_POINTS
-        front_center_x = front_start_x + (panel_width_mm * MM_TO_POINTS / 2)
+        # Layout: [wrap][back_panel][spine][front_panel][wrap]
+        spine_start_x = (wrap_mm + panel_width_mm) * MM_TO_POINTS
+        front_start_x = (wrap_mm + panel_width_mm + spine_width_mm) * MM_TO_POINTS
+        # Center on the actual front cover area (panel_width_mm), not including wrap
+        front_center_x = front_start_x + (panel_width_mm / 2 * MM_TO_POINTS)
     else:
         # For paperback: bleed + back + spine
-        front_start_x = (bleed_mm + front_width_mm + spine_width_mm) * MM_TO_POINTS
-        spine_start_x = (bleed_mm + front_width_mm) * MM_TO_POINTS
-        front_center_x = front_start_x + (front_width_mm * MM_TO_POINTS / 2)
+        front_start_x = (bleed_mm + page_width_mm + spine_width_mm) * MM_TO_POINTS
+        spine_start_x = (bleed_mm + page_width_mm) * MM_TO_POINTS
+        front_center_x = front_start_x + (page_width_mm * MM_TO_POINTS / 2)
     
     # Front cover text (use foreground color)
     c.setFillColorRGB(fg_r, fg_g, fg_b)
     
-    # Title on front (large, centered)
-    c.setFont(title_font, 36)
-    c.drawCentredString(front_center_x, total_height_pts * 0.6, title)
+    # Scale font sizes based on panel width
+    # US Letter panel is ~216mm, use 36pt as baseline
+    # Other sizes scale proportionally
+    base_page_width_mm = 216  # US Letter
+    base_title_size = 36
+    base_subtitle_size = 24
     
-    # Subtitle on front (medium)
+    scale_factor = page_width_mm / base_page_width_mm
+    title_size = int(base_title_size * scale_factor)
+    subtitle_size = int(base_subtitle_size * scale_factor)
+    
+    # Title on front (large, centered) - wrap to multiple lines if needed
+    text_width_pts = panel_width_mm * MM_TO_POINTS * 0.8
+    
+    c.setFont(title_font, title_size)
+    
+    # Split title into words and wrap to multiple lines
+    words = title.split()
+    lines = []
+    current_line = []
+    
+    # Title - use Paragraph for automatic wrapping
+    title_style = ParagraphStyle(
+        'Title',
+        fontName=title_font,
+        fontSize=title_size,
+        textColor=(fg_r, fg_g, fg_b),
+        alignment=TA_CENTER,
+        leading=title_size * 1.2
+    )
+    title_para = Paragraph(title, title_style)
+    title_width, title_height = title_para.wrap(text_width_pts, total_height_pts)
+    
+    # Draw title centered at 60% height
+    title_y = total_height_pts * 0.6 - (title_height / 2)
+    title_para.drawOn(c, front_center_x - (title_width / 2), title_y)
+    
+    # Subtitle
     if subtitle:
-        c.setFont(body_font, 24)
-        c.drawCentredString(front_center_x, total_height_pts * 0.5, subtitle)
+        subtitle_style = ParagraphStyle(
+            'Subtitle',
+            fontName=body_font,
+            fontSize=subtitle_size,
+            textColor=(fg_r, fg_g, fg_b),
+            alignment=TA_CENTER,
+            leading=subtitle_size * 1.2
+        )
+        subtitle_para = Paragraph(subtitle, subtitle_style)
+        subtitle_width, subtitle_height = subtitle_para.wrap(text_width_pts, total_height_pts)
+        
+        # Draw subtitle centered at 50% height
+        subtitle_y = total_height_pts * 0.5 - (subtitle_height / 2)
+        subtitle_para.drawOn(c, front_center_x - (subtitle_width / 2), subtitle_y)
     
     # Author on front (bottom)
     c.setFont(body_font, 18)
