@@ -58,6 +58,7 @@ load_dotenv()
 
 # Conversion factor: millimeters to points (1 point = 1/72 inch = 25.4/72 mm)
 MM_TO_POINTS = 2.83465
+INCH_TO_MM = 25.4
 
 START_URL = "https://www.lulu.com/account/wizard/draft/start"
 PROJECT_ID_FILE = Path(".lulu_project_counter.txt")
@@ -84,8 +85,20 @@ BOOK_SIZES = {
     ("US Letter Landscape", 279, 216),
     ("A4 Landscape", 297, 210),
 }
-# Pages: 2-800 in general, varies by binding type
-BINDINGS = ("Paperback Perfect Bound", "Paperback Coil Bound", "Paperback Saddle Stitch", "Hardcover Case Wrap", "Hardcover Linen Wrap")
+# Page counts Lulu will accept, which vary by binding type.
+# https://help.lulu.com/en/support/solutions/articles/64000255583-tips-for-formatting-documents
+BINDINGS = {
+    "Paperback Perfect Bound": (32, 800),
+    "Paperback Coil Bound": (2, 470),
+    "Paperback Saddle Stitch": (4, 48),
+    "Hardcover Case Wrap": (24, 800),
+    "Hardcover Linen Wrap": (24, 800),
+}
+# The two kinds of book we order, and which Lulu binding each one means.
+BINDING_TYPES = {
+    "paperback": "Paperback Perfect Bound",
+    "hardcover": "Hardcover Case Wrap",
+}
 COLOR = ("Standard Black & White", "Premium Black & White", "Standard Color", "Premium Color")
 PAPER_TYPES = ("60# Uncoated Cream", "60# Uncoated White", "80# Coated White")
 COVER_FINISH = ("Glossy", "Matte")
@@ -898,15 +911,47 @@ async def process_page_5_onwards(page):
     #open_repl(page, "Pausing for manual continuation")
     return True
 
+def get_binding():
+    """Which Lulu binding to order, from BOOK_BINDING."""
+    binding_type = os.environ.get("BOOK_BINDING", "hardcover")
+    if binding_type not in BINDING_TYPES:
+        sys.exit(f"❌ BOOK_BINDING={binding_type!r} is not one of: {', '.join(BINDING_TYPES)}")
+    return BINDING_TYPES[binding_type]
+
+
+def check_page_count(page_count, binding):
+    """Raise if this page count is out of range for this binding type."""
+    min_pages, max_pages = BINDINGS[binding]
+    if not min_pages <= page_count <= max_pages:
+        raise ValueError(
+            f"{binding} needs {min_pages}-{max_pages} pages, but the PDF has {page_count}"
+        )
+
+
 def get_spine_width(page_count, binding):
     """
-    Get spine width in mm for hardcover based on page count.
-    Returns None if hardcover not available (< 24 pages).
-    
-    Based on Lulu's hardcover spine width table.
+    Get spine width in mm for the given binding and page count.
+
+    Formula and table both from Lulu:
+    https://help.api.lulu.com/en/support/solutions/articles/64000254616
     """
+    check_page_count(page_count, binding)
+
+    if binding == "Paperback Perfect Bound":
+        # (pages / pages_per_inch) + 0.06" of cover board allowance.
+        # 444 pages per inch assumes the 60# uncoated paper we order below;
+        # 80# coated stock is thinner, at 460 pages per inch.
+        return (page_count / 444 + 0.06) * INCH_TO_MM
+
+    if binding == "Paperback Saddle Stitch":
+        assert False, "Saddle stitch is untested"
+        return 0  # stapled through the fold, so there is no spine
+
+    if binding not in ("Hardcover Case Wrap", "Hardcover Linen Wrap"):
+        assert False, f"Don't know the spine width for: {binding}"
+
+    # Hardcover is a step table rather than a formula.
     spine_table = [
-        (2, 23, 0),
         (24, 84, 6),
         (85, 140, 13),
         (141, 168, 16),
@@ -962,7 +1007,7 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
 
     spine_width_mm = get_spine_width(num_pages, binding)
     assert spine_width_mm is not None, f"Invalid number of pages {num_pages} for binding '{binding}'"
-    print(f"📏 Spine width for {num_pages} pages: {spine_width_mm}mm")
+    print(f"📏 Spine width for {num_pages} pages: {spine_width_mm:.1f}mm")
         
     if binding == "Hardcover Case Wrap":
         # Hardcover specifications per Lulu documentation:
@@ -996,10 +1041,13 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
         
         # Total height: trim + top_wrap + bottom_wrap + overhang  
         total_height_mm = wrap_mm + panel_height_mm + wrap_mm
-    elif binding == "Paperback Saddle Stitch":
+    elif binding == "Paperback Perfect Bound":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
-        
+
+        # The front panel is just the page; there is no wrap to allow for.
+        panel_width_mm = page_width_mm
+
         # Calculate dimensions
         # Width: bleed + back + spine + front + bleed
         total_width_mm = bleed_mm + page_width_mm + spine_width_mm + page_width_mm + bleed_mm
@@ -1010,7 +1058,7 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
     
     print(f"📐 Cover dimensions ({binding}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
     print(f"   Interior: {page_width_mm:.1f}mm x {page_height_mm:.1f}mm")
-    print(f"   Spine: {spine_width_mm}mm")
+    print(f"   Spine: {spine_width_mm:.1f}mm")
     
     # Convert to points for ReportLab
     total_width_pts = total_width_mm * MM_TO_POINTS
@@ -1201,12 +1249,11 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         print(f"📊 PDF Info: {pdf_info['page_count']} pages, {pdf_info['width_mm']:.1f}mm x {pdf_info['height_mm']:.1f}mm")
         
         num_pages = pdf_info['page_count']
-        if num_pages > 23:
-            binding = "Hardcover Case Wrap"
-        else:
-            binding = "Paperback Saddle Stitch"
+        binding = get_binding()
+        check_page_count(num_pages, binding)
+        print(f"📕 Binding: {binding}")
 
-        
+
         # Generate cover PDF
         cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
         print(f"📐 Generating cover PDF...")
