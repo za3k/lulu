@@ -1033,29 +1033,27 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
         # COVER = margin + usable_height + margin
 
         # Each panel
+        edge_mm = wrap_mm
         panel_width_mm = overhang_mm + page_width_mm
         panel_height_mm = overhang_mm + page_height_mm + overhang_mm
-        
-        # Total width: wrap + back_panel + spine + front_panel + wrap
-        total_width_mm = wrap_mm + panel_width_mm + spine_width_mm + panel_width_mm + wrap_mm
-        
-        # Total height: trim + top_wrap + bottom_wrap + overhang  
-        total_height_mm = wrap_mm + panel_height_mm + wrap_mm
     elif binding == "Paperback Perfect Bound":
         # Paperback has 0.125" (3.175mm) bleed on outer edges
         bleed_mm = 3.175
 
-        # The front panel is just the page; there is no wrap to allow for.
+        # The panels are just the page; there is no wrap to allow for.
+        edge_mm = bleed_mm
         panel_width_mm = page_width_mm
-
-        # Calculate dimensions
-        # Width: bleed + back + spine + front + bleed
-        total_width_mm = bleed_mm + page_width_mm + spine_width_mm + page_width_mm + bleed_mm
-        # Height: bleed + height + bleed
-        total_height_mm = bleed_mm + page_height_mm + bleed_mm
+        panel_height_mm = page_height_mm
     else:
-        assert False, f"Don't know how to calculte cover size for: {binding}" 
-    
+        assert False, f"Don't know how to calculte cover size for: {binding}"
+
+    # Both bindings lay out the same way, differing only in how wide the edge
+    # is and whether the panels include an overhang:
+    #
+    # edge | (BACK) | spine | (FRONT) | edge
+    total_width_mm = edge_mm + panel_width_mm + spine_width_mm + panel_width_mm + edge_mm
+    total_height_mm = edge_mm + panel_height_mm + edge_mm
+
     print(f"📐 Cover dimensions ({binding}): {total_width_mm:.1f}mm x {total_height_mm:.1f}mm")
     print(f"   Interior: {page_width_mm:.1f}mm x {page_height_mm:.1f}mm")
     print(f"   Spine: {spine_width_mm:.1f}mm")
@@ -1111,18 +1109,11 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
     c.rect(0, 0, total_width_pts, total_height_pts, fill=True, stroke=False)
     
     # Calculate positions (in points)
-    if binding == "Hardcover Case Wrap":
-        # Layout: [wrap][back_panel][spine][front_panel][wrap]
-        spine_start_x = (wrap_mm + panel_width_mm) * MM_TO_POINTS
-        front_start_x = (wrap_mm + panel_width_mm + spine_width_mm) * MM_TO_POINTS
-        # Center on the actual front cover area (panel_width_mm), not including wrap
-        front_center_x = front_start_x + (panel_width_mm / 2 * MM_TO_POINTS)
-    else:
-        # For paperback: bleed + back + spine
-        front_start_x = (bleed_mm + page_width_mm + spine_width_mm) * MM_TO_POINTS
-        spine_start_x = (bleed_mm + page_width_mm) * MM_TO_POINTS
-        front_center_x = front_start_x + (page_width_mm * MM_TO_POINTS / 2)
-    
+    spine_start_x = (edge_mm + panel_width_mm) * MM_TO_POINTS
+    front_start_x = (edge_mm + panel_width_mm + spine_width_mm) * MM_TO_POINTS
+    # Center on the actual front cover area, not including the edge
+    front_center_x = front_start_x + (panel_width_mm / 2 * MM_TO_POINTS)
+
     # Front cover text (use foreground color)
     c.setFillColorRGB(fg_r, fg_g, fg_b)
     
