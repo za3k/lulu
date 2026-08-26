@@ -1002,13 +1002,15 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
         author: Author name
         front_width_mm: Front cover width (trim size)
         front_height_mm: Front cover height (trim size)
-        TODO: add 2 params
+        num_pages: Interior page count, which sets the spine width
+        binding: One of BINDINGS
     """
 
     spine_width_mm = get_spine_width(num_pages, binding)
     assert spine_width_mm is not None, f"Invalid number of pages {num_pages} for binding '{binding}'"
     print(f"📏 Spine width for {num_pages} pages: {spine_width_mm:.1f}mm")
         
+    # A 'panel' is the usable area of the front/back cover
     if binding == "Hardcover Case Wrap":
         # Hardcover specifications per Lulu documentation:
         # - 0.75" (19.05mm) wrap on top, bottom, and outer (right) edges
