@@ -10,7 +10,7 @@ BOOK_SUBTITLE="A Guide for an Unclear Audience"
 COVER_BG_COLOR=ffffff
 COVER_FG_COLOR=000000
 # Either "paperback" or "hardcover"
-BOOK_BINDING=paperback
+BOOK_BINDING=hardcover
 
 # This is used for billing and shipping only
 NAME_FIRST=John
