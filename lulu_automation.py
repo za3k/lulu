@@ -799,7 +799,7 @@ async def create_book_page9(page):
     while a not in ("y", "n"):
         a = input("Press Y to really, definitely buy this").strip().lower()
 
-    if a in == "y":
+    if a == "y":
         await click_button(page, "Pay Now with Credit Card")
 
         print("✓ Page 9 complete")
