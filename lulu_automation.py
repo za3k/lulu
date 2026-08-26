@@ -31,13 +31,10 @@ Playwright also needs a browser, once:
 from dotenv import load_dotenv
 from IPython.terminal.embed import InteractiveShellEmbed
 from pathlib import Path
-from pathlib import Path
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfReader
 from reportlab.lib.enums import TA_CENTER
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch, mm
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
@@ -46,12 +43,9 @@ from urllib.parse import urlparse
 import argparse
 import asyncio
 import code
-import json
 import nest_asyncio
 import os
 import sys
-import time
-import time
 import traceback
 
 load_dotenv()
@@ -187,8 +181,8 @@ async def wait_for_any(page, conditions, poll_interval_ms=500, timeout_ms=5000):
     """
     iterations = timeout_ms // poll_interval_ms
     
-    for i in range(iterations):
-        for idx, (selector, description) in enumerate(conditions):
+    for _ in range(iterations):
+        for selector, description in conditions:
             if await check_for_selector(page, selector, timeout=100):
                 return description
         await page.wait_for_timeout(poll_interval_ms)
@@ -200,7 +194,7 @@ async def check_for_text(page, text, timeout=30000):
     try:
         await wait_for_text(page, text, timeout)
         return True
-    except:
+    except Exception:
         return False
 
 async def click_button(page, text):
@@ -223,12 +217,9 @@ async def check_for_selector(page, selector, timeout=1000):
         True if selector found, False otherwise
     """
     try:
-        start = time.time()
         await page.wait_for_selector(selector, timeout=timeout)
-        elapsed = time.time() - start
-        #print(f"Waited {int(elapsed*1000)}/{timeout}ms")
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -538,13 +529,11 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     
     # Extract page count from the page (should match our PDF info)
     page_count_input = await page.query_selector("input[id='page-count']")
-    if page_count_input:
-        num_pages_str = await page_count_input.get_attribute("value")
-        num_pages = int(num_pages_str) if num_pages_str else pdf_info['page_count']
-        print(f"📖 Page count from form: {num_pages}")
+    num_pages_str = await page_count_input.get_attribute("value") if page_count_input else None
+    if num_pages_str:
+        print(f"📖 Page count from form: {num_pages_str}")
     else:
-        num_pages = pdf_info['page_count']
-        print(f"📖 Using PDF page count: {num_pages}")
+        print("📖 Form did not report a page count")
     
     # Set global cost_text from the form (will be used in page 5)
     global cost_text
@@ -639,7 +628,7 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
             if req['response']:
                 f.write(f"  Response: {req['response']}\n")
             else:
-                f.write(f"  Response: <no response captured>\n")
+                f.write("  Response: <no response captured>\n")
             f.write("\n" + "-" * 80 + "\n\n")
     
     print(f"📝 Logged {len(ajax_requests)} AJAX requests to {ajax_log_file}")
@@ -650,7 +639,7 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     # Save reference to the first file input (interior PDF)
     initial_file_inputs = await page.query_selector_all("input[type='file']")
     first_input = initial_file_inputs[0] if initial_file_inputs else None
-    print(f"📍 Tracked first file input (interior)")
+    print("📍 Tracked first file input (interior)")
     
     # Wait for cover upload section to appear - look for a NEW file input
     print("⏳ Waiting for cover upload section to load...")
@@ -664,12 +653,12 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
         for inp in file_inputs:
             if first_input and inp != first_input:
                 cover_input = inp
-                print(f"✓ Found new file input (cover)")
+                print("✓ Found new file input (cover)")
                 break
             elif not first_input and len(file_inputs) > 1:
                 # If we lost reference to first input, just use second one
                 cover_input = file_inputs[1]
-                print(f"✓ Found second file input (cover)")
+                print("✓ Found second file input (cover)")
                 break
         
         if cover_input:
@@ -847,7 +836,7 @@ def open_repl(page, message="Manual continuation"):
         # Enable top-level await
         ipshell.autoawait = True
         ipshell()
-    except ImportError as e:
+    except ImportError:
         # Fall back to standard REPL
         print("→ Using standard REPL")
         print("   (install 'ipython' and 'nest-asyncio' for better experience)")
@@ -1133,13 +1122,6 @@ def generate_cover_pdf(output_path, title, subtitle, author, page_width_mm, page
     # Title on front (large, centered) - wrap to multiple lines if needed
     text_width_pts = panel_width_mm * MM_TO_POINTS * 0.8
     
-    c.setFont(title_font, title_size)
-    
-    # Split title into words and wrap to multiple lines
-    words = title.split()
-    lines = []
-    current_line = []
-    
     # Title - use Paragraph for automatic wrapping
     title_style = ParagraphStyle(
         'Title',
@@ -1249,7 +1231,7 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
 
         # Generate cover PDF
         cover_path = Path(pdf_path).parent / f"cover_{Path(pdf_path).stem}.pdf"
-        print(f"📐 Generating cover PDF...")
+        print("📐 Generating cover PDF...")
         generate_cover_pdf(
             cover_path,
             title,

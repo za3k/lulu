@@ -4,7 +4,7 @@ Written by [Claude](https://claude.ai) and [za3k](https://za3k.com)
 
 This is a command-line program which takes a PDF, and publishes it, sending it to your house, and pays for it with your credit card.
 
-Copy `sample-env` to `.env` and edit it to add personal info. You will need to make a [lulu.com](https://www.lulu.com) account to use the program.
+Copy `env-sample` to `.env` and edit it to add personal info. You will need to make a [lulu.com](https://www.lulu.com) account to use the program.
 
 Usage:
 
