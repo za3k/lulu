@@ -806,16 +806,16 @@ async def create_book_page9(page):
     await sec_frame.get_by_label("Security code").fill(os.environ.get("CC_CVV", ""))
     await exp_frame.get_by_label("Expiry date").fill(os.environ.get("CC_EXP", ""))
 
-    a = input("Press Y to really, definitely buy this")
-    while a.strip() not in "yYnN":
-        a = input("Press Y to really, definitely buy this")
+    a = input("Press Y to really, definitely buy this").strip().lower()
+    while a not in ("y", "n"):
+        a = input("Press Y to really, definitely buy this").strip().lower()
 
-    if a.strip() in "yY":
+    if a in == "y":
         await click_button(page, "Pay Now with Credit Card")
 
         print("✓ Page 9 complete")
         return True
-    elif a.strip() in "nN":
+    elif a == "n":
         return False
 
 async def create_book_page10(page):
