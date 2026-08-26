@@ -43,9 +43,11 @@ from urllib.parse import urlparse
 import argparse
 import asyncio
 import code
+import json
 import nest_asyncio
 import os
 import sys
+import time
 import traceback
 
 load_dotenv()
@@ -315,12 +317,15 @@ async def upload_file(page, file_path, description="file"):
     if not file_input:
         raise Exception(f"Could not find file input for {description}")
     
+    # set_input_files fires 'input' and 'change' itself. Do not dispatch a
+    # second 'change' afterwards: by then Lulu's handler has usually consumed
+    # the FileList and cleared input.value, so the extra event re-runs the
+    # handler against an empty FileList and the widget resets to its
+    # "choose a file" state -- which is the "Upload lost, page reverted to
+    # upload button" failure.
     await file_input.set_input_files(str(file_path))
     await page.wait_for_timeout(500)
-    
-    # Trigger change event to make sure UI updates
-    await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", file_input)
-    
+
     print(f"✓ Uploaded {description}")
 
 
@@ -463,6 +468,145 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     await page.wait_for_timeout(2000)
     print("✓ Page loaded, starting upload...")
     
+    print("📊 Setting up AJAX logging...")
+    ajax_requests = []
+
+    async def log_request(request):
+        # Filter for lulu.com domain only
+        if request.resource_type in ["xhr", "fetch"]:
+            try:
+                domain = urlparse(request.url).netloc
+                if domain.endswith('lulu.com'):
+                    req_data = {
+                        'url': request.url,
+                        'method': request.method,
+                        'post_data': None,
+                        'response': None
+                    }
+
+                    # Try to get POST data, handle binary data gracefully
+                    try:
+                        req_data['post_data'] = request.post_data
+                    except:
+                        req_data['post_data'] = "<binary or non-UTF8 data>"
+
+                    ajax_requests.append(req_data)
+            except:
+                pass
+
+    async def log_response(response):
+        # Filter for lulu.com domain only
+        try:
+            domain = urlparse(response.url).netloc
+            if response.request.resource_type in ["xhr", "fetch"] and domain.endswith('lulu.com'):
+                # Find the matching request
+                for req in ajax_requests:
+                    if req['url'] == response.url and req['response'] is None:
+                        try:
+                            req['response'] = await response.text()
+                        except Exception as e:
+                            req['response'] = f"<error reading response: {e}>"
+                        break
+        except:
+            pass
+
+    page.on("request", log_request)
+    page.on("response", log_response)
+
+    # Page-level events. If Lulu's frontend navigates, throws, or logs an
+    # error mid-upload, that would remount the upload widget and reset it --
+    # which is what the removed "reset" checks were really seeing.
+    started = time.monotonic()
+    page_events = []
+
+    def note(kind, detail):
+        entry = f"[{time.monotonic() - started:7.2f}s] {kind}: {detail}"
+        page_events.append(entry)
+        print(f"🔎 {entry}")
+
+    def on_navigate(frame):
+        if frame == page.main_frame:
+            note("framenavigated", frame.url)
+
+    def on_console(msg):
+        if msg.type in ("error", "warning"):
+            note(f"console.{msg.type}", msg.text[:500])
+
+    page.on("framenavigated", on_navigate)
+    page.on("pageerror", lambda exc: note("pageerror", str(exc)[:500]))
+    page.on("console", on_console)
+
+    async def dump_ajax_log(outcome):
+        # Called on every exit from here on, so a failed upload leaves
+        # evidence behind. One file per run, so retries do not clobber
+        # each other.
+        try:
+            vis = await page.evaluate(
+                "() => document.visibilityState + ', hasFocus=' + document.hasFocus()")
+        except Exception as e:
+            vis = f"<unavailable: {e}>"
+        note("visibility", vis)
+        note("url", page.url)
+
+        # What state is the upload widget actually in? The network trace says
+        # Lulu accepted the file, so anything odd here is the frontend's view.
+        try:
+            inputs = await page.evaluate("""() =>
+                [...document.querySelectorAll("input[type=file]")].map(i => ({
+                    name: i.name, id: i.id, testid: i.dataset.testid,
+                    files: i.files ? i.files.length : null,
+                    filename: i.files && i.files[0] ? i.files[0].name : null,
+                    visible: !!(i.offsetParent || i.getClientRects().length),
+                }))""")
+            note("file inputs", json.dumps(inputs))
+        except Exception as e:
+            note("file inputs", f"<unavailable: {e}>")
+
+        try:
+            lines = await page.evaluate(r"""() =>
+                (document.body.innerText || "").split("\n")
+                    .map(l => l.trim()).filter(l => l &&
+                        /upload|file|valid|normaliz|pdf|page count/i.test(l))
+                    .slice(0, 30)""")
+            note("widget text", " | ".join(lines))
+        except Exception as e:
+            note("widget text", f"<unavailable: {e}>")
+
+        try:
+            apollo = await page.evaluate(
+                "() => typeof window.__APOLLO_CLIENT__ !== 'undefined'")
+            note("apollo client exposed", str(apollo))
+        except Exception as e:
+            note("apollo client exposed", f"<unavailable: {e}>")
+
+        try:
+            shot = Path(f"lulu_ajax_{outcome}.png")
+            await page.screenshot(path=str(shot))
+            note("screenshot", str(shot))
+        except Exception as e:
+            note("screenshot", f"<unavailable: {e}>")
+
+        path = Path(f"lulu_ajax_{outcome}.log")
+        with open(path, 'w') as f:
+            f.write(f"AJAX Requests Log ({outcome}) - {len(ajax_requests)} requests captured\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Page events ({len(page_events)}):\n")
+            for entry in page_events:
+                f.write(f"  {entry}\n")
+            f.write("\n" + "=" * 80 + "\n\n")
+            for i, req in enumerate(ajax_requests):
+                f.write(f"Request {i+1}:\n")
+                f.write(f"  URL: {req['url']}\n")
+                f.write(f"  Method: {req['method']}\n")
+                if req['post_data']:
+                    f.write(f"  POST Data: {req['post_data']}\n")
+                if req['response']:
+                    f.write(f"  Response: {req['response']}\n")
+                else:
+                    f.write("  Response: <no response captured>\n")
+                f.write("\n" + "-" * 80 + "\n\n")
+        print(f"📝 Logged {len(ajax_requests)} AJAX requests to {path}")
+
     await upload_file(page, pdf_path, "pdf book")
     
     # Wait for upload flow to start OR detect immediate failure
@@ -479,28 +623,44 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
             await page.wait_for_timeout(200)
         case None:
             print("⚠️  Upload status unclear after 5 seconds")
+            await dump_ajax_log("upload-unclear")
             return False
         case _:
             assert False, f"Unexpected result from wait_for_any: {result}"
     
-    # Wait for validation to start
+    # Wait for validation to start.
+    # The upload button becoming visible again is NOT evidence the upload was
+    # lost: a captured run showed setInteriorFile returning status VALIDATING
+    # with no errors while this branch fired. Lulu owns the verdict, so only
+    # its own messages are trusted below.
     print("⏳ Waiting for validation...")
+    # Lulu moves the file VALIDATING -> VALIDATED -> NORMALIZING, and a fast
+    # validation can pass through the "validating" wording between polls. A
+    # successful run was captured showing "Your file is normalizing" here, so
+    # accept any sign that Lulu is working on the file.
     result = await wait_for_any(page, [
         ("text=Your file is validating", "upload_validating"),
-        ("[data-testid='interior-file-upload-button']", "reset")
-    ], timeout_ms=5000)
+        ("text=Your file is normalizing", "upload_validating"),
+        ("text=Your Book file was successfully uploaded!", "upload_validating"),
+    ], timeout_ms=15000)
     match result:
         case "upload_validating":
-            print("✓ Validation started")
-        case "reset":
-            print("⚠️  Upload lost, page reverted to upload button")
-            buttons = await page.query_selector_all("text=Upload your PDF file")
-            for i, btn in enumerate(buttons):
-                visible = await btn.is_visible()
-                print(f"Button {i}: visible={visible}; {btn}")
-            return "RETRY"
+            print("✓ Lulu is processing the file")
         case None:
-            print("⚠️  Upload status unclear after 5 seconds")
+            print("⚠️  Validation did not visibly start after 15 seconds")
+            await dump_ajax_log("validating-not-seen")
+
+            # Every captured failure has Lulu accepting the file and starting
+            # to validate it, while the wizard forgets it exists and never
+            # polls wizardProjectData again. The backend state is the real
+            # one, and the wizard rebuilds itself from it on load -- so
+            # reload rather than give up. Same draft, same file, no new
+            # project. The 120s wait below then decides for real.
+            await resync_wizard(page, [
+                ("text=Your file is validating", "processing"),
+                ("text=Your file is normalizing", "processing"),
+                ("text=Your Book file was successfully uploaded!", "processing"),
+            ], "interior file")
         case _:
             assert False, f"Unexpected result from wait_for_any: {result}"
     
@@ -509,7 +669,6 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     result = await wait_for_any(page, [
         ("text=Your Book file was successfully uploaded!", "success"),
         ("[data-testid*='file-upload-notification-error']", "error"),
-        ("[data-testid='interior-file-upload-button']", "reset")
     ], timeout_ms=120000)
     
     match result:
@@ -517,12 +676,11 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
             print("✓ PDF validated successfully")
         case "error":
             print("❌ Page 2 failed - PDF upload error")
+            await dump_ajax_log("upload-error")
             return False
-        case "reset":
-            print("⚠️  Upload lost, page reverted to upload button")
-            return "RETRY"
         case None:
             print("⚠️  Page 2 status unclear - check manually")
+            await dump_ajax_log("validation-unclear")
             return False
         case _:
             assert False, f"Unexpected validation result: {result}"
@@ -537,52 +695,7 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     
     # Set global cost_text from the form (will be used in page 5)
     global cost_text
-    print("📊 Setting up AJAX logging...")
-    ajax_log_file = Path("lulu_ajax_requests.log")
-    ajax_requests = []
-    
-    async def log_request(request):
-        # Filter for lulu.com domain only
-        if request.resource_type in ["xhr", "fetch"]:
-            try:
-                domain = urlparse(request.url).netloc
-                if domain.endswith('lulu.com'):
-                    req_data = {
-                        'url': request.url,
-                        'method': request.method,
-                        'post_data': None,
-                        'response': None
-                    }
-                    
-                    # Try to get POST data, handle binary data gracefully
-                    try:
-                        req_data['post_data'] = request.post_data
-                    except:
-                        req_data['post_data'] = "<binary or non-UTF8 data>"
-                    
-                    ajax_requests.append(req_data)
-            except:
-                pass
-    
-    async def log_response(response):
-        # Filter for lulu.com domain only
-        try:
-            domain = urlparse(response.url).netloc
-            if response.request.resource_type in ["xhr", "fetch"] and domain.endswith('lulu.com'):
-                # Find the matching request
-                for req in ajax_requests:
-                    if req['url'] == response.url and req['response'] is None:
-                        try:
-                            req['response'] = await response.text()
-                        except Exception as e:
-                            req['response'] = f"<error reading response: {e}>"
-                        break
-        except:
-            pass
-    
-    page.on("request", log_request)
-    page.on("response", log_response)
-    
+
     # Interior Color
     await select_radio(page, "Standard Black & White")
     
@@ -615,23 +728,7 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     # Give responses time to complete
     await page.wait_for_timeout(1000)
     
-    # Write AJAX requests to file
-    with open(ajax_log_file, 'w') as f:
-        f.write(f"AJAX Requests Log - {len(ajax_requests)} requests captured\n")
-        f.write("=" * 80 + "\n\n")
-        for i, req in enumerate(ajax_requests):
-            f.write(f"Request {i+1}:\n")
-            f.write(f"  URL: {req['url']}\n")
-            f.write(f"  Method: {req['method']}\n")
-            if req['post_data']:
-                f.write(f"  POST Data: {req['post_data']}\n")
-            if req['response']:
-                f.write(f"  Response: {req['response']}\n")
-            else:
-                f.write("  Response: <no response captured>\n")
-            f.write("\n" + "-" * 80 + "\n\n")
-    
-    print(f"📝 Logged {len(ajax_requests)} AJAX requests to {ajax_log_file}")
+    await dump_ajax_log("ok")
 
     # Select "Upload Your Cover"
     await select_radio(page, "Upload Your Cover")
@@ -669,9 +766,12 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
     
     # Upload cover
     print(f"📤 Uploading cover: {cover_path}")
+    # As with the interior file, do not dispatch a second 'change' here --
+    # set_input_files already fires one, and the extra event can re-run the
+    # handler against an emptied FileList and reset the widget.
     await cover_input.set_input_files(str(cover_path))
-    await page.evaluate("(input) => { input.dispatchEvent(new Event('change', { bubbles: true })); }", cover_input)
-    
+
+
     print("⏳ Waiting for cover to upload and validate...")
     # Wait for cover validation messages
     if await check_for_selector(page, "text=Your file is uploading", timeout=10000):
@@ -694,6 +794,12 @@ async def create_book_page2(page, pdf_path, cover_path, binding="Unknown Binding
             return False
         case None:
             print("⚠️  Cover validation status unclear")
+            await dump_ajax_log("cover-unclear")
+            # Same resync as the interior file. Lulu has the cover; if the
+            # wizard has lost track of it, a reload rebuilds from their state.
+            await resync_wizard(page, [
+                ("text=You successfully uploaded a cover file!", "cover ok"),
+            ], "cover")
         case _:
             assert False, f"Unexpected cover validation result: {result}"
 
@@ -915,6 +1021,44 @@ def check_page_count(page_count, binding):
         raise ValueError(
             f"{binding} needs {min_pages}-{max_pages} pages, but the PDF has {page_count}"
         )
+
+
+async def resync_wizard(page, confirm_selectors, label="wizard"):
+    """
+    Nudge Lulu's wizard back into agreement with its own backend.
+
+    Lulu ships with Apollo devtools connected, so window.__APOLLO_CLIENT__ is
+    reachable and a targeted refetch is enough to rebuild the wizard's view
+    without losing the page. Falls back to a full reload, which resets the
+    Apollo cache outright, if that does not take.
+
+    Returns True if one of confirm_selectors showed up.
+    """
+    try:
+        result = await page.evaluate("""async () => {
+            const c = window.__APOLLO_CLIENT__;
+            if (!c) return "no client";
+            await c.refetchQueries({ include: ["wizardProjectData"] });
+            return "refetched";
+        }""")
+        print(f"🔄 Apollo refetch: {result}")
+    except Exception as e:
+        print(f"🔄 Apollo refetch failed: {e}")
+
+    if await wait_for_any(page, confirm_selectors, timeout_ms=10000):
+        print(f"✓ {label} resynced without reloading")
+        return True
+
+    print(f"🔄 Refetch did not take; reloading to resync the {label}...")
+    await page.reload(wait_until="domcontentloaded")
+    await page.wait_for_timeout(3000)
+    print(f"   back at {page.url}")
+    if await wait_for_any(page, confirm_selectors, timeout_ms=30000):
+        print(f"✓ {label} resynced after reload")
+        return True
+
+    print(f"⚠️  {label} still not resynced after reloading")
+    return False
 
 
 def get_spine_width(page_count, binding):
@@ -1251,7 +1395,16 @@ async def automate_book_upload(pdf_path=None, title="Untitled Book", subtitle=""
         context = await p.chromium.launch_persistent_context(
             str(user_data_dir),
             headless=False,
-            args=['--disable-blink-features=AutomationControlled'],
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                # Lulu polls for validation progress on a timer. Chrome
+                # throttles (and eventually freezes) timers in windows that
+                # are backgrounded or occluded, which would stall that poll
+                # whenever the window is not visible.
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+            ],
         )
         
         page = context.pages[0] if context.pages else await context.new_page()
