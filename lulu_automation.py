@@ -1,4 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "playwright>=1.40.0",
+#     "PyPDF2>=3.0.0",
+#     "reportlab>=4.0.0",
+#     "python-dotenv>=1.0.0",
+#     "ipython>=8.0.0",
+#     "nest-asyncio>=1.5.0",
+# ]
+# ///
 """
 Lulu.com book upload automation
 
@@ -6,14 +17,15 @@ Author: Claude (Anthropic AI Assistant)
 License: MIT
 Additional credit to: Zachary Vance
 
-To use with a .env file:
-    pip install python-dotenv --break-system-packages
-    
-    Create a .env file with:
+Setup:
     cp env-sample .env
     nano .env
-    
-    Then run: python lulu_automation.py
+
+Then run -- uv installs the dependencies itself:
+    uv run lulu_automation.py
+
+Playwright also needs a browser, once:
+    uv run --with playwright playwright install chromium
 """
 
 from dotenv import load_dotenv
